@@ -218,6 +218,10 @@ pytest
 - 中文交流：[QQ 群 47572014](https://qm.qq.com/q/JWOPDBNssw)
 - 安全漏洞：[GitHub 私密安全报告](https://github.com/fuyuxiang/echo-agent/security/advisories/new)，披露流程见 [SECURITY.md](SECURITY.md)
 
+## 项目发起人
+
+Echo Agent 由 **付玉祥**、**高延荣** 共同发起。
+
 ## 许可证
 
 Echo Agent 基于 [MIT License](LICENSE) 开源。桌面端所含第三方组件的许可信息见 [第三方许可说明](client/THIRD_PARTY_NOTICES.md)。
