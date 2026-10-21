@@ -1,0 +1,58 @@
+name: Download statistics
+
+on:
+  schedule:
+    # Daily at 10:23 Asia/Shanghai, away from the busy start of the hour.
+    - cron: "23 2 * * *"
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/download-stats.yml
+      - scripts/update_download_badges.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: download-statistics
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: github.repository == 'fuyuxiang/echo-agent' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      # The website currently serves this public endpoint over HTTP only.
+      # Keep the last successful badges if fetching or validation fails.
+      - name: Fetch official download statistics
+        run: >-
+          curl --fail --silent --show-error --location
+          --retry 3 --connect-timeout 10 --max-time 30
+          http://www.ojlab.com/data/stats.json
+          -o "${RUNNER_TEMP}/echo-agent-download-stats.json"
+
+      - name: Render download badges
+        run: python scripts/update_download_badges.py "${RUNNER_TEMP}/echo-agent-download-stats.json"
+
+      - name: Commit updated badges
+        run: |
+          git add .github/badges/runtime-downloads.svg .github/badges/desktop-downloads.svg .github/badges/stats-updated.svg
+          if git diff --cached --quiet; then
+            echo "Download statistics are unchanged."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m "更新官网下载统计数据"
+          git pull --rebase origin master
+          git push origin HEAD:master

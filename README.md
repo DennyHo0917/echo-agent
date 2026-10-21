@@ -13,6 +13,11 @@ Echo Agent 为持续工作的 AI 助理与应用提供可自托管的运行时�
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/fuyuxiang/echo-agent?style=flat)](https://github.com/fuyuxiang/echo-agent/stargazers)
 
+<!-- Refreshed daily from the official website by .github/workflows/download-stats.yml. -->
+[![Runtime 累计下载](.github/badges/runtime-downloads.svg)](http://www.ojlab.com/)
+[![桌面端累计下载](.github/badges/desktop-downloads.svg)](http://www.ojlab.com/)
+[![统计更新日期](.github/badges/stats-updated.svg)](http://www.ojlab.com/data/stats.json)
+
 [快速开始](#快速开始) · [运行方式](#运行方式) · [记忆与进化](#长期记忆与技能自进化) · [桌面端](#echoagent-desktop) · [扩展与集成](#扩展与集成) · [文档](#文档) · [English](README.en.md)
 
 </div>

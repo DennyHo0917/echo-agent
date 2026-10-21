@@ -13,6 +13,11 @@ Echo Agent provides a self-hosted runtime for AI assistants and applications tha
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/fuyuxiang/echo-agent?style=flat)](https://github.com/fuyuxiang/echo-agent/stargazers)
 
+<!-- Refreshed daily from the official website by .github/workflows/download-stats.yml. -->
+[![Runtime total downloads](.github/badges/runtime-downloads.svg)](http://www.ojlab.com/)
+[![Desktop total downloads](.github/badges/desktop-downloads.svg)](http://www.ojlab.com/)
+[![Statistics updated](.github/badges/stats-updated.svg)](http://www.ojlab.com/data/stats.json)
+
 [Quick start](#quick-start) · [Ways to run](#ways-to-run) · [Memory & evolution](#long-term-memory-and-skill-evolution) · [Desktop](#echoagent-desktop) · [Extensions & integration](#extensions-and-integration) · [Documentation](#documentation) · [中文](README.md)
 
 </div>
@@ -217,6 +222,10 @@ We welcome bug fixes, Runtime improvements, tools, Skills, Plugins, messaging ch
 - Bug reports and feature requests: [GitHub Issues](https://github.com/fuyuxiang/echo-agent/issues)
 - Chinese-language chat: [QQ group 47572014](https://qm.qq.com/q/JWOPDBNssw)
 - Security vulnerabilities: [GitHub private security reports](https://github.com/fuyuxiang/echo-agent/security/advisories/new); see [SECURITY.md](SECURITY.md) for the disclosure process
+
+## Project Founders
+
+Echo Agent was co-founded by **Yuxiang Fu** and **Yanrong Gao**.
 
 ## License
 

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="210" height="20" role="img" aria-label="Desktop downloads: 1,091,108">
+  <title>Desktop downloads: 1,091,108</title>
+  <clipPath id="badge"><rect width="210" height="20" rx="3"/></clipPath>
+  <g clip-path="url(#badge)">
+    <rect width="133" height="20" fill="#555"/>
+    <rect x="133" width="77" height="20" fill="#4c1"/>
+  </g>
+  <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11">
+    <text x="66.5" y="14">Desktop downloads</text>
+    <text x="171.5" y="14">1,091,108</text>
+  </g>
+</svg>
