@@ -682,6 +682,8 @@ class ModelManagement(Generic[T]):
             except CorruptedCacheError:
                 force_download = True
             except Exception:
+                # A failed cache-only probe is treated as a cache miss; the normal
+                # download/fallback paths below retry and report a final load failure.
                 pass
             finally:
                 enable_progress_bars()

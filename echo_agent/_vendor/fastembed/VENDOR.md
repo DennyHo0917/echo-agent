@@ -23,10 +23,13 @@ It changes only:
 3. Dependency declarations: `pyproject.toml` carries upstream's runtime
    requirements, with Pillow changed to `>=13.0.0,<14`. Python 3.10 markers are
    omitted because Echo Agent requires Python 3.11 or newer.
+4. An explanatory comment on the cache-only probe's exception handler in
+   `common/model_management.py`: a failed probe falls through to the existing
+   download/fallback paths, which report a final load failure. Behavior is unchanged.
 
 Modified Python files carry an Echo Agent notice. To refresh the copy, verify
 the official wheel hash, copy its `fastembed/` files and license notices, apply
-the three changes above, and update the matching runtime requirements.
+the four changes above, and update the matching runtime requirements.
 
 Remove this copy and restore the upstream dependency once a released FastEmbed
 supports the patched Pillow version. Before updating, verify offline text
