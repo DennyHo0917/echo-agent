@@ -104,6 +104,13 @@ CATALOG: list[ProviderCatalogEntry] = [
         fallback_models=["qwen/qwen3.8-max"],
         models_endpoint="https://api.atlascloud.ai/v1/models",
     ),
+    ProviderCatalogEntry(
+        id="cheaperinference", label="Cheaper Inference", group="aggregator", dialect="openai",
+        api_base="https://api.cheaperinference.com/v1",
+        api_key_env_vars=("CHEAPER_INFERENCE_API_KEY",),
+        fallback_models=["gpt-5.4-mini"],
+        models_endpoint="https://api.cheaperinference.com/v1/models",
+    ),
     # ── local ──
     ProviderCatalogEntry(
         id="ollama", label="Ollama", group="local", dialect="openai",
