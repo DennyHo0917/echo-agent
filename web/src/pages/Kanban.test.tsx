@@ -67,6 +67,28 @@ afterEach(() => {
 });
 
 describe("Kanban 看板", () => {
+  it("创建未返回时禁止重复提交,完成后恢复输入", async () => {
+    let release: (value: unknown) => void = () => {};
+    const spy = vi.spyOn(api, "apiFetch").mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path.startsWith("/tasks?")) return { tasks: [] } as never;
+      if (path === "/tasks" && init?.method === "POST") {
+        return new Promise((resolve) => { release = resolve as typeof release; }) as never;
+      }
+      return { admin: true, authRequired: true } as never;
+    });
+    renderKanban();
+    const input = await screen.findByPlaceholderText("新建任务…");
+    fireEvent.change(input, { target: { value: "重复提交测试" } });
+    const form = input.closest("form")!;
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    expect(spy.mock.calls.filter(([path, init]) => path === "/tasks" && init?.method === "POST")).toHaveLength(1);
+    expect(input).toBeDisabled();
+    release({ task: task({ id: "created", title: "重复提交测试" }) });
+    await waitFor(() => expect(input).toBeEnabled());
+    expect(input).toHaveValue("");
+  });
+
   it("按状态分列渲染,失败列常驻", async () => {
     mockTasks([task(), task({ id: "t2", title: "跑批", status: "failed", error: "超时了" })]);
     renderKanban();

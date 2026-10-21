@@ -23,6 +23,23 @@ def _payload_has_content(payload: object) -> bool:
     return bool(command)
 
 
+def _validate_job_fields(body: dict) -> str:
+    for field in ("name", "cron_expr"):
+        if field in body and not isinstance(body[field], str):
+            return f"{field} must be a string"
+    for field in ("enabled", "authorize_unattended"):
+        if field in body and not isinstance(body[field], bool):
+            return f"{field} must be a boolean"
+    if "payload" in body:
+        payload = body["payload"]
+        if not isinstance(payload, dict):
+            return "payload must be an object"
+        for field in ("command", "message"):
+            if field in payload and not isinstance(payload[field], str):
+                return f"payload.{field} must be a string"
+    return ""
+
+
 def _merge_payload(current: object, incoming: dict) -> dict:
     """Merge an update into the stored payload instead of replacing it.
 
@@ -57,7 +74,8 @@ class CronAPI:
 
     def _guard_read(self, request: web.Request, action: str) -> web.Response | None:
         """Read-level guard: listing jobs and run history is chat-scope info."""
-        return self._server._require_api_token(request, action=action)
+        guard = self._server._require_api_token(request, action=action)
+        return guard if guard is not None else self._unavailable()
 
     def _guard_write(self, request: web.Request, action: str) -> web.Response | None:
         """Admin guard for every mutation.
@@ -71,7 +89,15 @@ class CronAPI:
         deployment with no tokens at all it passes through, leaving the Origin /
         CSRF checks as the boundary.
         """
-        return self._server._require_admin_token(request, action=action)
+        guard = self._server._require_admin_token(request, action=action)
+        return guard if guard is not None else self._unavailable()
+
+    def _unavailable(self) -> web.Response | None:
+        if self._scheduler() is None:
+            return web.json_response(
+                {"error": "scheduler is disabled (scheduler.enabled=false)"}, status=503,
+            )
+        return None
 
     def _operator(self, request: web.Request) -> str:
         """Who to record as having issued a grant.
@@ -108,6 +134,10 @@ class CronAPI:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON body"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+        if error := _validate_job_fields(body):
+            return web.json_response({"error": error}, status=400)
 
         name = body.get("name", "")
         cron_expr = body.get("cron_expr", "")
@@ -157,6 +187,10 @@ class CronAPI:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON body"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+        if error := _validate_job_fields(body):
+            return web.json_response({"error": error}, status=400)
 
         job = self._scheduler().get_job(job_id)
         if not job:

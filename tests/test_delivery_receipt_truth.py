@@ -263,6 +263,10 @@ async def test_http_tool_delivery_buffer_overflow_reports_failure_even_with_ws()
     gw = _gateway()
     gw._MAX_HTTP_TOOL_DELIVERY_FRAMES = 1
     gw._ws_clients["gateway:cli:u1"] = _live_socket()
+    gw._delivery_scopes.remember(InboundEvent.text_message(
+        channel="gateway:cli", sender_id="u1", chat_id="u1", text="request",
+        event_id="evt-overflow",
+    ))
     future: asyncio.Future = asyncio.get_running_loop().create_future()
     gw._pending_http["evt-overflow"] = future
 
@@ -379,7 +383,8 @@ async def test_non_gateway_event_gets_no_opinion():
     their own channel."""
     gw = _gateway()
 
-    assert await gw._handle_outbound(_final(channel="telegram", chat_id="c")) is None
+    receipt = await gw._handle_outbound(_final(channel="telegram", chat_id="c"))
+    assert receipt.stage is DeliveryStage.NO_HANDLER
 
 
 @pytest.mark.asyncio
@@ -428,6 +433,20 @@ async def test_bus_aggregates_live_delivery_as_ok():
     receipt = await bus.publish_outbound(_final())
 
     assert receipt.ok is True
+
+
+@pytest.mark.asyncio
+async def test_global_observers_do_not_accept_a_cron_reply_without_a_receiver():
+    from echo_agent.channels.manager import ChannelManager
+    from echo_agent.config.schema import ChannelsConfig
+
+    gw = _gateway()
+    # The production bus has a channel manager, router and Gateway as global
+    # observers even when no concrete cron/channel receiver is registered.
+    ChannelManager(ChannelsConfig(), gw._bus)
+    receipt = await gw._bus.publish_outbound(_final(channel="cron", chat_id="cron:qa"))
+    assert receipt.ok is False
+    assert receipt.stage is DeliveryStage.NO_HANDLER
 
 
 # ── send_file honesty ────────────────────────────────────────────────────────

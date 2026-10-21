@@ -67,7 +67,7 @@ _ARTIFACT_CHAT_OUTPUT_RE = re.compile(
     re.IGNORECASE,
 )
 _ARTIFACT_CHAT_NEGATION_RE = re.compile(
-    r"(?:不要|别|不需|无需|(?:^|\s)do\s+not|(?:^|\s)don't|(?:^|\s)not)\s*$",
+    r"(?:不要|别|不需要?|无[需须]|禁止|请勿|勿|(?:^|\s)do\s+not|(?:^|\s)don't|(?:^|\s)never|(?:^|\s)not)\s*$",
     re.IGNORECASE,
 )
 _ARTIFACT_HOW_TO_RE = re.compile(
@@ -97,6 +97,26 @@ _ARTIFACT_RESUME_RE = re.compile(
     r"(?:\s*(?:吧|一下))?\s*[。.!！？?~～]*\s*$",
     re.IGNORECASE,
 )
+# A comma starts a new instruction only when followed by an imperative or a
+# conjunction. Commas in a document's subject and dots in filenames/versions
+# stay intact. Match each clause independently so negated drafts cannot consume
+# a later positive request, or lend nouns to an unrelated preceding verb.
+_ARTIFACT_CLAUSE_RE = re.compile(
+    r"[；;。！？!?\n]+|(?<!\b[a-z])\.(?=\s|$)|[，,](?=\s*(?:"
+    r"请|但|而|再|不要|别|不需|无[需须]|禁止|勿|生成|创建|制作|输出|导出|保存|写入|交付|给我|提供|撰写|写|"
+    r"(?:please|but|then|and|instead|however|do\s+not|don't|never|not|"
+    r"generate|create|write|export|save|deliver|produce|prepare|draft)\b))",
+    re.IGNORECASE,
+)
+_ARTIFACT_NEGATED_CLAUSE_RE = re.compile(
+    r"^\s*(?:(?:请(?:你)?|麻烦(?:你)?)\s*)?(?:不要|别|不需要?|无[需须]|禁止|请勿|勿)|"
+    r"^\s*(?:please\s+)?(?:do\s+not|don't|never|not)\b",
+    re.IGNORECASE,
+)
+_ARTIFACT_CLAUSE_CONNECTOR_RE = re.compile(
+    r"^\s*(?:(?:但是|但|而|然后)|(?:but|then|and|instead|however)\b)\s*",
+    re.IGNORECASE,
+)
 _ARTIFACT_OUTPUT_PATTERNS = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
     # Require an output/delivery verb near a document noun.  Input size and a
     # noun such as "全文" alone describe what is being *read*, not the desired
@@ -107,9 +127,9 @@ _ARTIFACT_OUTPUT_PATTERNS = tuple(re.compile(pattern, re.IGNORECASE) for pattern
     r"(?:保存|写入|输出|导出|交付|下载|作为附件|成文件)",
     r"(?:给我|提供|交付).{0,10}(?:一份|一个)?.{0,8}"
     r"(?:(?:完整|详细|审校|校对)){0,3}(?:报告|文档|文件|稿件|白皮书|说明书)",
-    r"(?:generate|create|write|export|save|deliver|produce).{0,40}"
-    r"(?:full |complete |detailed |proofreading )?(?:report|document|file|manuscript)",
-    r"(?:report|document|file|manuscript).{0,40}"
+    r"\b(?:generate|create|write|export|save|deliver|produce)\b.{0,40}"
+    r"(?:full |complete |detailed |proofreading )?\b(?:report|document|file|manuscript)s?\b",
+    r"\b(?:report|document|file|manuscript)s?\b.{0,40}"
     r"(?:as (?:an? )?(?:attachment|file)|to (?:a )?file|for download)",
     # Preserve the pre-existing terse command form without reintroducing the
     # old broad substring match.  A bare "完整报告" is an output request;
@@ -961,4 +981,13 @@ class ContextStage:
             return False
         if _ARTIFACT_DOC_TRANSFORM_RE.search(lower):
             return False
-        return any(pattern.search(lower) for pattern in _ARTIFACT_OUTPUT_PATTERNS)
+        for clause in _ARTIFACT_CLAUSE_RE.split(lower):
+            clause = _ARTIFACT_CLAUSE_CONNECTOR_RE.sub("", clause)
+            if _ARTIFACT_NEGATED_CLAUSE_RE.search(clause):
+                continue
+            for pattern in _ARTIFACT_OUTPUT_PATTERNS:
+                for match in pattern.finditer(clause):
+                    prefix = clause[max(0, match.start() - 32):match.start()]
+                    if not _ARTIFACT_CHAT_NEGATION_RE.search(prefix):
+                        return True
+        return False

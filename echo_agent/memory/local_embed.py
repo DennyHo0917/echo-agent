@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
+from echo_agent.memory.model_import import import_model_module
 
 from echo_agent.memory.local_rerank import _run_on_daemon_thread
 
@@ -238,7 +239,7 @@ class LocalEmbedder:
             # so an operator-provided HF_ENDPOINT env var always wins.
             if self._hf_endpoint:
                 os.environ.setdefault("HF_ENDPOINT", self._hf_endpoint)
-            fastembed = importlib.import_module("echo_agent._vendor.fastembed")
+            fastembed = import_model_module("echo_agent._vendor.fastembed")
             kwargs: dict[str, Any] = {"model_name": self._model_name}
             if self._cache_dir:
                 kwargs["cache_dir"] = self._cache_dir

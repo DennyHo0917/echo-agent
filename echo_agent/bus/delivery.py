@@ -38,6 +38,28 @@ class DeliveryResult:
         # them; only an explicit failure or exception is treated as failed.
         return self.stage in (DeliveryStage.DELIVERED, DeliveryStage.ACCEPTED)
 
+    def merge(self, other: "DeliveryResult") -> "DeliveryResult":
+        """Combine handlers/targets without losing failures or recovery context."""
+        order = {
+            DeliveryStage.FAILED: 3,
+            DeliveryStage.DELIVERED: 2,
+            DeliveryStage.ACCEPTED: 1,
+            DeliveryStage.NO_HANDLER: 0,
+        }
+        best = self if order[self.stage] >= order[other.stage] else other
+        routes = [*self.detail.get("routes", []), *other.detail.get("routes", [])]
+        unknown = self.detail.get("delivery_unknown") or other.detail.get("delivery_unknown")
+        if not routes and not unknown:
+            return best
+        detail = dict(best.detail)
+        if routes:
+            detail["routes"] = routes
+        if unknown:
+            # One uncertain target prevents an automatic replay of the entire
+            # message, even when another target returned a definite failure.
+            detail["delivery_unknown"] = True
+        return DeliveryResult(best.stage, best.channel, best.error, detail)
+
     @classmethod
     def from_send_result(cls, sr: "SendResult", channel: str) -> "DeliveryResult":
         # A channel can intentionally skip a non-final event (for example an

@@ -224,9 +224,11 @@ class SkillsAPI:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON body"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
 
         path = body.get("path")
-        if not path:
+        if not isinstance(path, str) or not path.strip():
             return web.json_response({"error": "path is required"}, status=400)
 
         source = Path(path).expanduser()

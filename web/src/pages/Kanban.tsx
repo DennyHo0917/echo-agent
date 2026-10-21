@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   DndContext,
@@ -31,6 +31,8 @@ export function Kanban() {
   const { t } = useTranslation(["kanban", "common"]);
   const { tasks, loading, loaded, fetchError, fetchTasks, transitionTask, createTask, updateLocal, addLocal } = useKanbanStore();
   const [newTitle, setNewTitle] = useState("");
+  const [creating, setCreating] = useState(false);
+  const creatingRef = useRef(false);
   const [showArchived, setShowArchived] = useState(false);
   const [draggingFrom, setDraggingFrom] = useState<string | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -118,10 +120,17 @@ export function Kanban() {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newTitle.trim()) return;
+    if (!newTitle.trim() || creatingRef.current) return;
+    creatingRef.current = true;
+    setCreating(true);
     // 仅在创建成功后清空输入:失败时保留用户已输入的标题,避免网络/后端错误吞掉输入。
-    const ok = await createTask(newTitle.trim());
-    if (ok) setNewTitle("");
+    try {
+      const ok = await createTask(newTitle.trim());
+      if (ok) setNewTitle("");
+    } finally {
+      creatingRef.current = false;
+      setCreating(false);
+    }
   };
 
   // 只有首屏(还没成功拉取过)才整页显示加载态。此前 loading 一置位就 return,
@@ -141,16 +150,17 @@ export function Kanban() {
           value={newTitle}
           onChange={(e) => setNewTitle(e.target.value)}
           placeholder={t("newPlaceholder")}
-          disabled={!canWrite}
+          disabled={!canWrite || creating}
           className="border rounded px-3 py-1.5 flex-1 disabled:bg-gray-100 disabled:cursor-not-allowed"
         />
         <button
           type="submit"
-          disabled={!canWrite}
+          disabled={!canWrite || creating}
+          aria-busy={creating}
           title={canWrite ? undefined : t("common:adminOnly")}
           className="bg-blue-600 text-white px-3 py-1.5 rounded flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          <Plus size={16} /> {t("create")}
+          <Plus size={16} /> {t(creating ? "creating" : "create")}
         </button>
       </form>
 

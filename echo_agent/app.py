@@ -720,15 +720,20 @@ def _gateway_port_in_use(host: str, port: int) -> str | None:
     EADDRINUSE 包装（server.py），它对真实 bind 失败给出同样的提示。本函数
     对 ``0.0.0.0`` / ``::`` 仅探测 ``127.0.0.1``，因此可能漏报 IPv6 或指定
     网卡地址的占用——那种情况仍会走到 start() 的 EADDRINUSE 兜底。用一个
-    throwaway socket（SO_REUSEADDR off）探测，尽量贴近 aiohttp 的 bind 行为。
+    throwaway socket 探测，POSIX 下像 asyncio/aiohttp 一样启用 SO_REUSEADDR，
+    避免把刚停止服务留下的 TIME_WAIT 误报成仍有进程监听。
     Port 0 是 ephemeral 哨兵——永不「占用」，跳过探测。"""
     if not port:
         return None
+    import os
     import socket
+    import sys
 
     probe_host = "127.0.0.1" if host in ("", "0.0.0.0", "::") else host
     family = socket.AF_INET6 if ":" in probe_host else socket.AF_INET
     with socket.socket(family, socket.SOCK_STREAM) as sock:
+        if os.name == "posix" and sys.platform != "cygwin":
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((probe_host, port))
         except OSError:

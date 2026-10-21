@@ -43,6 +43,7 @@ from echo_agent.bus.idempotency import (
 )
 from echo_agent.bus.queue import MessageBus
 from echo_agent.channels.base import SendResult
+from echo_agent.bus.delivery import DeliveryResult, DeliveryStage
 from echo_agent.channels.manager import ChannelManager
 from echo_agent.channels.qqbot_media import detect_media_kind
 from echo_agent.config.schema import GatewayConfig
@@ -63,6 +64,7 @@ from echo_agent.gateway.session_policy import SessionResetPolicy
 from echo_agent.gateway import ws_common
 from echo_agent.gateway.ws_dashboard import DashboardWebSocket
 from echo_agent.gateway.ws_session import normalize_platform, resolve_client_session_key
+from echo_agent.gateway.ws_delivery import ConnectionKey, GatewayDeliveryScopes, connection_key
 from echo_agent.session.manager import SessionManager
 
 
@@ -97,7 +99,9 @@ class GatewayServer:
         self._app: web.Application | None = None
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
-        self._ws_clients: dict[str, web.WebSocketResponse] = {}
+        self._ws_clients: dict[ConnectionKey, web.WebSocketResponse] = {}
+        self._delivery_scopes = GatewayDeliveryScopes()
+        self._bus.subscribe_inbound(self._remember_delivery_scope)
         self._pending_http: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._MAX_PENDING_HTTP = 500
         # Tool-originated outbound events inherit ``is_final=True``, but they
@@ -228,7 +232,13 @@ class GatewayServer:
         )
         return session, True
 
+    async def _remember_delivery_scope(self, event: InboundEvent) -> None:
+        # Include native-channel turns: their message/send_file tools can
+        # explicitly address an interactive target from another channel.
+        self._delivery_scopes.remember(event)
+
     async def _accept_turn(self, event: InboundEvent, session: Any) -> None:
+        self._delivery_scopes.remember(event)
         # Approval/clarification replies are control traffic for an already
         # running primary turn. Recording them as independent turns makes a
         # reconnect's "latest" lookup report the tiny /approve acknowledgement
@@ -458,6 +468,7 @@ class GatewayServer:
         for ws_id, ws in list(self._ws_clients.items()):
             await ws.close(code=aiohttp.WSCloseCode.GOING_AWAY, message=b"shutdown")
         self._ws_clients.clear()
+        self._delivery_scopes.clear()
 
         jobs = getattr(self, "_knowledge_jobs", None)
         if jobs is not None:
@@ -1919,10 +1930,9 @@ class GatewayServer:
                                 await websocket.send_json({"type": "error", "error": "forbidden session_key"})
                                 await websocket.close()
                                 return websocket
-                            # 身份键 session_key（cli 自带时=cli:alice）用于会话隔离与冒充拒绝；
-                            # 投递键 delivery_key 用出站重算式 gateway:{platform}:{chat_id}，
-                            # 让 _handle_outbound 无需任何 metadata 透传即可命中所有出站路径。
-                            delivery_key = f"gateway:{platform}:{chat_id}"
+                            # The target alone is insufficient: two explicit
+                            # conversations can legitimately share a chat ID.
+                            delivery_key = connection_key(f"gateway:{platform}:{chat_id}", session_key)
                             self._ws_clients[delivery_key] = websocket
                             # Lifts the pre-auth deadline. Set here, past every
                             # rejection branch above, so a failed handshake never
@@ -2353,7 +2363,11 @@ class GatewayServer:
             # in wait_for_answer until the 24h registry backstop. Route it through
             # the bus as an internal control command that the loop intercepts
             # before the session lock. Best-effort — never let this break teardown.
-            if session_key:
+            session_still_connected = any(
+                (key[1] if isinstance(key, tuple) else key) == session_key and not ws.closed
+                for key, ws in self._ws_clients.items()
+            )
+            if session_key and not session_still_connected:
                 try:
                     cancel_event = InboundEvent.text_message(
                         channel=f"gateway:{platform}",
@@ -2372,10 +2386,10 @@ class GatewayServer:
 
         return websocket
 
-    async def _handle_outbound(self, event: OutboundEvent) -> SendResult | None:
+    async def _handle_outbound(self, event: OutboundEvent) -> SendResult | DeliveryResult | None:
         """Deliver a gateway-bound event to its live client, reporting the truth.
 
-        Returns ``None`` — "no opinion" — for anything this handler does not own.
+        Returns ``NO_HANDLER`` for anything this handler does not own.
         That matters because this is a *global* outbound handler: it sees every
         channel's events, and ``MessageBus._aggregate`` folds a returned
         SendResult into the delivery verdict. Voting FAILED on, say, a Telegram
@@ -2392,7 +2406,7 @@ class GatewayServer:
         if event.metadata.get("_drop"):
             return None
         if not event.channel.startswith("gateway:"):
-            return None
+            return DeliveryResult(DeliveryStage.NO_HANDLER, event.channel)
         self._purge_http_tool_deliveries()
 
         _, platform = event.channel.split(":", 1)
@@ -2459,7 +2473,8 @@ class GatewayServer:
                         payload=response_payload,
                     )
 
-        delivered = await self.broadcast_to_ws(session_key, payload)
+        delivery_key = self._delivery_scopes.resolve(event, self._ws_clients)
+        delivered = delivery_key is not None and await self.broadcast_to_ws(delivery_key, payload)
         if buffer_error is not None:
             # A WebSocket may also have received this frame, but the synchronous
             # HTTP caller did not.  Reporting success would let multipart
@@ -2498,7 +2513,7 @@ class GatewayServer:
             error="no live gateway client for this session (reply persisted to history only)",
         )
 
-    async def broadcast_to_ws(self, session_key: str, data: dict[str, Any]) -> bool:
+    async def broadcast_to_ws(self, session_key: ConnectionKey, data: dict[str, Any]) -> bool:
         ws = self._ws_clients.get(session_key)
         if ws is None:
             logger.debug("broadcast_to_ws: no live client for session_key={}", session_key)

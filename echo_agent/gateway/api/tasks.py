@@ -23,6 +23,12 @@ def _validate_task_fields(body: dict) -> str:
 
     Only keys actually present are checked, so PATCH semantics stay intact.
     """
+    for field in ("title", "description", "assignee", "source", "board_id", "parent_task_id",
+                  "blocked_reason", "review_summary"):
+        if field in body and not isinstance(body[field], str):
+            return f"{field} must be a string"
+    if "title" in body and not body["title"].strip():
+        return "title must not be empty"
     if "priority" in body and (
         isinstance(body["priority"], bool) or not isinstance(body["priority"], int)
     ):
@@ -208,6 +214,8 @@ class TasksAPI:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON body"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
 
         to_status = body.get("to")
         if not to_status:

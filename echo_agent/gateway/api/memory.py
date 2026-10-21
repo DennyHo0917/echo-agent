@@ -215,6 +215,8 @@ class MemoryAPI:
             body = await request.json()
         except json.JSONDecodeError:
             return web.json_response({"error": "invalid JSON"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
 
         content = body.get("content")
         tags = body.get("tags")
@@ -319,9 +321,11 @@ class MemoryAPI:
             body = await request.json()
         except json.JSONDecodeError:
             return web.json_response({"error": "invalid JSON"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
 
         query = body.get("query", "")
-        if not query:
+        if not isinstance(query, str) or not query.strip():
             return web.json_response({"error": "query required"}, status=400)
 
         mem_type = body.get("type")
@@ -330,8 +334,17 @@ class MemoryAPI:
         from echo_agent.memory.types import MemoryType
         from echo_agent.memory.eligibility import Audience
 
-        mt = MemoryType(mem_type) if mem_type else None
+        if mem_type is not None and not isinstance(mem_type, str):
+            return web.json_response({"error": "invalid memory type"}, status=400)
+        try:
+            mt = MemoryType(mem_type) if mem_type else None
+        except ValueError:
+            return web.json_response({"error": "invalid memory type"}, status=400)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 500:
+            return web.json_response({"error": "limit must be an integer between 1 and 500"}, status=400)
         session_key = body.get("session_key")
+        if session_key is not None and not isinstance(session_key, str):
+            return web.json_response({"error": "session_key must be a string"}, status=400)
         # 无 session_key 即全量跨主体检索,是跨 scope 暴露口子;须显式 all_scopes=true 才放行。
         all_scopes = self._truthy_flag(body.get("all_scopes"))
         if not session_key and not all_scopes:

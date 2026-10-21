@@ -2,6 +2,7 @@
   "loading": "Loading…",
   "newPlaceholder": "New task…",
   "create": "Create",
+  "creating": "Creating…",
   "autoClaimHint": "Click \"Start\" (or drag to \"Queued\") on an inbox task; the Agent will claim and run it automatically.",
   "showArchived": "Show cancelled / suspended",
   "emptyColumn": "No tasks",

@@ -21,6 +21,7 @@ from echo_agent.gateway.hooks import HookRegistry
 from echo_agent.gateway.router import DeliveryRouter
 from echo_agent.bus.events import OutboundEvent, ContentBlock, ContentType
 from echo_agent.bus.queue import MessageBus
+from echo_agent.bus.delivery import DeliveryResult, DeliveryStage
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +264,81 @@ class TestDeliveryRouter:
     def _make_bus(self) -> MessageBus:
         return MessageBus()
 
+    def _capture_delivery(self, published):
+        async def capture(event):
+            published.append(event)
+            return DeliveryResult(DeliveryStage.DELIVERED, event.channel)
+        return capture
+
+    @pytest.mark.asyncio
+    async def test_router_preserves_a_failed_target_receipt(self):
+        from echo_agent.channels.base import SendResult
+
+        bus = self._make_bus()
+        router = DeliveryRouter(bus)
+        router.add_mirror_route("src", "dst", "target")
+        bus.subscribe_outbound("dst", AsyncMock(return_value=SendResult(success=False, error="offline")))
+        receipt = await bus.publish_outbound(_make_outbound(channel="src"))
+        assert receipt.stage is DeliveryStage.FAILED
+        assert receipt.error == "offline"
+
+    @pytest.mark.asyncio
+    async def test_router_without_a_matching_route_does_not_claim_delivery(self):
+        bus = self._make_bus()
+        DeliveryRouter(bus)
+        receipt = await bus.publish_outbound(_make_outbound(channel="src"))
+        assert receipt.stage is DeliveryStage.NO_HANDLER
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("missing_first", [True, False])
+    async def test_missing_route_fails_without_hiding_successful_targets(self, missing_first):
+        from echo_agent.channels.base import SendResult
+
+        bus = self._make_bus()
+        router = DeliveryRouter(bus)
+        targets = ["missing", "live"] if missing_first else ["live", "missing"]
+        for target in targets:
+            router.add_cron_route("*", target, "receiver")
+        live = AsyncMock(return_value=SendResult(success=True, message_id="sent-1"))
+        bus.subscribe_outbound("live", live)
+        receipt = await bus.publish_outbound(_make_outbound(
+            channel="cron", metadata={"source_session_key": "cron:job"},
+        ))
+        assert receipt.stage is DeliveryStage.FAILED
+        assert "missing:receiver" in receipt.error
+        live.assert_awaited_once()
+        routes = {route["channel"]: route for route in receipt.detail["routes"]}
+        assert routes["missing"]["stage"] == "failed"
+        assert routes["live"]["stage"] == "delivered"
+        assert routes["live"]["detail"]["message_id"] == "sent-1"
+
+    @pytest.mark.asyncio
+    async def test_primary_success_keeps_all_route_receipts(self):
+        from echo_agent.channels.base import SendResult
+
+        bus = self._make_bus()
+        router = DeliveryRouter(bus)
+        router.add_mirror_route("src", "dst", "receiver")
+        bus.subscribe_outbound_global(AsyncMock(return_value=SendResult(success=True)))
+        receipt = await bus.publish_outbound(_make_outbound(channel="src"))
+        assert receipt.stage is DeliveryStage.DELIVERED
+        assert receipt.detail["routes"][0]["channel"] == "dst"
+
+    @pytest.mark.asyncio
+    async def test_unknown_route_receipt_survives_another_failure(self):
+        from echo_agent.channels.base import SendResult
+
+        bus = self._make_bus()
+        router = DeliveryRouter(bus)
+        router.add_mirror_route("src", "offline", "receiver")
+        router.add_mirror_route("src", "unknown", "receiver")
+        bus.subscribe_outbound("offline", AsyncMock(return_value=SendResult(success=False, error="offline")))
+        bus.subscribe_outbound("unknown", AsyncMock(return_value=SendResult(success=False, delivery_unknown=True)))
+        receipt = await bus.publish_outbound(_make_outbound(channel="src"))
+        assert receipt.stage is DeliveryStage.FAILED
+        assert receipt.detail["delivery_unknown"] is True
+        assert len(receipt.detail["routes"]) == 2
+
     def test_add_rule_and_match(self):
         bus = self._make_bus()
         router = DeliveryRouter(bus)
@@ -279,6 +355,7 @@ class TestDeliveryRouter:
         async def capture(event: OutboundEvent):
             published.append(event)
             # Don't recurse into global handlers for routed events
+            return DeliveryResult(DeliveryStage.DELIVERED, event.channel)
         bus.publish_outbound = capture
 
         event = _make_outbound(channel="src", chat_id="c1")
@@ -296,7 +373,7 @@ class TestDeliveryRouter:
         router.add_cron_route("cron:daily_report", "qq", "group1")
 
         published: list[OutboundEvent] = []
-        bus.publish_outbound = AsyncMock(side_effect=lambda e: published.append(e))
+        bus.publish_outbound = self._capture_delivery(published)
 
         event = _make_outbound(channel="internal", metadata={"source_session_key": "cron:daily_report"})
         await router._on_outbound(event)
@@ -310,7 +387,7 @@ class TestDeliveryRouter:
         router.add_cron_route("*", "telegram", "broadcast")
 
         published: list[OutboundEvent] = []
-        bus.publish_outbound = AsyncMock(side_effect=lambda e: published.append(e))
+        bus.publish_outbound = self._capture_delivery(published)
 
         event = _make_outbound(channel="x", metadata={"source_session_key": "cron:anything"})
         await router._on_outbound(event)
@@ -324,7 +401,7 @@ class TestDeliveryRouter:
         router.add_cron_route("*", "telegram", "broadcast")
 
         published: list[OutboundEvent] = []
-        bus.publish_outbound = AsyncMock(side_effect=lambda e: published.append(e))
+        bus.publish_outbound = self._capture_delivery(published)
 
         event = _make_outbound(channel="x", metadata={"source_session_key": "user:abc"})
         await router._on_outbound(event)
@@ -337,7 +414,7 @@ class TestDeliveryRouter:
         router.add_mirror_route("qq", "telegram", "tg_chat")
 
         published: list[OutboundEvent] = []
-        bus.publish_outbound = AsyncMock(side_effect=lambda e: published.append(e))
+        bus.publish_outbound = self._capture_delivery(published)
 
         event = _make_outbound(channel="qq", chat_id="qq_chat")
         await router._on_outbound(event)
@@ -352,7 +429,7 @@ class TestDeliveryRouter:
         router.add_rule(lambda e: True, "dst", "c")
 
         published: list[OutboundEvent] = []
-        bus.publish_outbound = AsyncMock(side_effect=lambda e: published.append(e))
+        bus.publish_outbound = self._capture_delivery(published)
 
         event = _make_outbound(channel="src", metadata={"_routed": True})
         await router._on_outbound(event)
@@ -376,7 +453,7 @@ class TestDeliveryRouter:
             raise ValueError("oops")
 
         good_published: list[OutboundEvent] = []
-        bus.publish_outbound = AsyncMock(side_effect=lambda e: good_published.append(e))
+        bus.publish_outbound = self._capture_delivery(good_published)
 
         router.add_rule(bad_pred, "bad_dst", "c1")
         router.add_rule(lambda e: True, "good_dst", "c2")

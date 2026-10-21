@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 InboundHandler = Callable[[InboundEvent], Awaitable[None]]
 InboundRejectionHandler = Callable[[InboundEvent, str], Awaitable[None]]
-OutboundHandler = Callable[[OutboundEvent], Awaitable["SendResult | None"]]
+OutboundHandler = Callable[[OutboundEvent], Awaitable["SendResult | DeliveryResult | None"]]
 
 
 class MessageBus:
@@ -250,21 +250,18 @@ class MessageBus:
                 best = self._merge(best, DeliveryResult(DeliveryStage.FAILED, channel, error=str(result)))
             elif isinstance(result, SendResult):
                 best = self._merge(best, DeliveryResult.from_send_result(result, channel))
+            elif isinstance(result, DeliveryResult):
+                # Global routers/observers can explicitly abstain with
+                # NO_HANDLER. Legacy channel callbacks returning None retain
+                # their historical ACCEPTED contract.
+                best = self._merge(best, result)
             else:  # None
                 best = self._merge(best, DeliveryResult(DeliveryStage.ACCEPTED, channel))
         return best
 
     @staticmethod
     def _merge(a: DeliveryResult, b: DeliveryResult) -> DeliveryResult:
-        # Precedence: FAILED wins (surface any explicit failure), then DELIVERED,
-        # then ACCEPTED, then NO_HANDLER.
-        order = {
-            DeliveryStage.FAILED: 3,
-            DeliveryStage.DELIVERED: 2,
-            DeliveryStage.ACCEPTED: 1,
-            DeliveryStage.NO_HANDLER: 0,
-        }
-        return a if order[a.stage] >= order[b.stage] else b
+        return a.merge(b)
 
     def subscribe_inbound(self, handler: InboundHandler) -> None:
         self._inbound_subscribers.append(handler)

@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import os
 import socket
 from unittest.mock import MagicMock
 
@@ -109,6 +110,29 @@ def test_port_preflight_skips_ephemeral_port() -> None:
     from echo_agent.app import _gateway_port_in_use
 
     assert _gateway_port_in_use("0.0.0.0", 0) is None
+
+
+@pytest.mark.skipif(os.name != "posix", reason="asyncio reuses server addresses on POSIX")
+def test_port_preflight_allows_restart_with_time_wait_connections() -> None:
+    from echo_agent.app import _gateway_port_in_use
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        with socket.create_connection(("127.0.0.1", port)) as client:
+            accepted, _ = listener.accept()
+            # Server closes first, leaving its accepted connection in TIME_WAIT.
+            accepted.close()
+            assert client.recv(1) == b""
+    assert _gateway_port_in_use("127.0.0.1", port) is None
+    # Reuse does not make a live listener available to another Gateway.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", port))
+        listener.listen(1)
+        assert _gateway_port_in_use("127.0.0.1", port) is not None
 
 
 def test_port_preflight_is_best_effort_not_authoritative() -> None:

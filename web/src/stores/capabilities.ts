@@ -105,9 +105,10 @@ export const useCapabilitiesStore = create<CapabilitiesState>((set, get) => ({
 export function useIsAdmin(): boolean | null {
   const admin = useCapabilitiesStore((s) => s.admin);
   const probe = useCapabilitiesStore((s) => s.probe);
+  const generation = useCapabilitiesStore((s) => s.generation);
   useEffect(() => {
     void probe();
-  }, [probe]);
+  }, [probe, generation]);
   return admin;
 }
 
@@ -122,8 +123,9 @@ export function useIsAdmin(): boolean | null {
 export function useAuthRequired(): boolean | null {
   const authRequired = useCapabilitiesStore((s) => s.authRequired);
   const probe = useCapabilitiesStore((s) => s.probe);
+  const generation = useCapabilitiesStore((s) => s.generation);
   useEffect(() => {
     void probe();
-  }, [probe]);
+  }, [probe, generation]);
   return authRequired;
 }

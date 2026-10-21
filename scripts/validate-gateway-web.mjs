@@ -26,6 +26,9 @@ const browser = await chromium.launch({
   ...(process.env.ECHO_UI_BROWSER_PATH ? { executablePath: process.env.ECHO_UI_BROWSER_PATH } : {}),
 });
 const page = await browser.newPage({ locale: "en-US" });
+// Real providers can take longer than Playwright's 30s action default. Keep
+// controlled local runs fast while allowing an explicit real-model budget.
+if (process.env.ECHO_UI_TIMEOUT_MS) page.setDefaultTimeout(Number(process.env.ECHO_UI_TIMEOUT_MS));
 const network = await page.context().newCDPSession(page);
 await network.send("Network.enable");
 network.on("Network.webSocketWillSendHandshakeRequest", ({ request }) => {
@@ -45,16 +48,22 @@ try {
   assert(meta.interactive_ws_path);
   await page.goto(`${base}/playground`);
   await page.getByLabel("API / Admin token").fill(token);
-  await page.getByLabel("Message", { exact: true }).fill("Echo UI HTTP acceptance");
-  const httpDone = page.waitForResponse((response) => response.url().endsWith(`${apiPrefix}/message`) && response.status() === 200);
+  const clientSessionKey = await page.getByLabel("Session key", { exact: true }).inputValue();
+  assert(clientSessionKey.startsWith("cli:"), "default playground session must satisfy the loopback identity boundary");
+  await page.getByLabel("Message", { exact: true }).fill("Reply exactly ECHO_UI_HTTP_OK. Do not use tools.");
+  const httpDone = page.waitForResponse((response) => response.url().endsWith(`${apiPrefix}/message`));
   await page.getByRole("button", { name: "Send Message", exact: true }).click();
-  const http = await (await httpDone).json();
+  const httpResponse = await httpDone;
+  const http = await httpResponse.json();
+  assert.equal(httpResponse.status(), 200, JSON.stringify(http));
   assert.equal(http.status, "completed");
+  assert.equal(http.session_key, clientSessionKey);
   assert(http.reply?.text);
   await page.locator("#log .agent").last().waitFor();
   await page.getByRole("button", { name: "Connect WebSocket" }).click();
   await page.getByText("Connected", { exact: true }).waitFor();
-  await page.getByLabel("Message", { exact: true }).fill("Echo UI WS acceptance");
+  await page.getByText(`session: ${clientSessionKey}`, { exact: true }).waitFor();
+  await page.getByLabel("Message", { exact: true }).fill("Reply exactly ECHO_UI_WS_OK. Do not use tools.");
   await page.getByRole("button", { name: "Send Message", exact: true }).click();
   await page.waitForFunction(() => document.querySelectorAll("#log .agent").length >= 2);
   await page.screenshot({ path: path.join(output, "fallback-auth-custom-paths.png"), fullPage: true });

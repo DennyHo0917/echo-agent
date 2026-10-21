@@ -14,6 +14,7 @@ from loguru import logger
 from echo_agent.bus.events import InboundEvent, OutboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.channels.base import BaseChannel, SendResult
+from echo_agent.bus.delivery import DeliveryResult, DeliveryStage
 from echo_agent.channels.cli import CLIChannel
 from echo_agent.channels.cron import CronChannel
 from echo_agent.channels.dingtalk import DingTalkChannel
@@ -174,7 +175,7 @@ class ChannelManager:
                 except Exception as e:
                     logger.debug("send_reaction failed on {}: {}", event.channel, e)
 
-    async def _filter_and_dispatch(self, event: OutboundEvent) -> SendResult | None:
+    async def _filter_and_dispatch(self, event: OutboundEvent) -> SendResult | DeliveryResult | None:
         if event.metadata.get("_token_stream"):
             result = await self._handle_token_stream(event)
             if event.metadata.get("_drop"):
@@ -202,6 +203,10 @@ class ChannelManager:
                 event.metadata["_drop"] = True
                 return
 
+        if event.channel not in self._channels:
+            # Gateway and routed events have other owners. Observing one must
+            # not count as accepting its delivery when no receiver exists.
+            return DeliveryResult(DeliveryStage.NO_HANDLER, event.channel)
         if event.is_final and event.message_kind in {"final", "clarification"}:
             result = None
             if not event.metadata.get("_token_stream"):

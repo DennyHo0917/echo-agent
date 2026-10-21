@@ -7,6 +7,7 @@ from typing import Callable
 from loguru import logger
 
 from echo_agent.bus.events import OutboundEvent
+from echo_agent.bus.delivery import DeliveryResult, DeliveryStage
 from echo_agent.bus.queue import MessageBus
 
 
@@ -58,9 +59,11 @@ class DeliveryRouter:
             source_channel, target_channel, target_chat_id,
         )
 
-    async def _on_outbound(self, event: OutboundEvent) -> None:
+    async def _on_outbound(self, event: OutboundEvent) -> DeliveryResult:
+        receipt = DeliveryResult(DeliveryStage.NO_HANDLER, event.channel)
+        routes = []
         if event.metadata.get("_routed"):
-            return
+            return receipt
 
         for predicate, target_channel, target_chat_id in self._rules:
             try:
@@ -78,8 +81,25 @@ class DeliveryRouter:
                 metadata={**event.metadata, "_routed": True},
                 is_final=event.is_final,
                 message_kind=event.message_kind,
+                delivery_origin=event.delivery_origin,
             )
-            await self._bus.publish_outbound(routed)
+            result = await self._bus.publish_outbound(routed)
+            if result.stage is DeliveryStage.NO_HANDLER:
+                result = DeliveryResult(
+                    DeliveryStage.FAILED, target_channel,
+                    error=f"no handler for routed target {target_channel}:{target_chat_id}",
+                )
+            routes.append({
+                "channel": target_channel, "chat_id": target_chat_id,
+                "stage": result.stage.value, "error": result.error,
+                "detail": dict(result.detail),
+            })
+            receipt = receipt.merge(result)
+        if routes:
+            receipt = DeliveryResult(receipt.stage, receipt.channel, receipt.error, {
+                **receipt.detail, "routes": routes,
+            })
+        return receipt
 
     @property
     def rule_count(self) -> int:

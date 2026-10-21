@@ -87,6 +87,51 @@ def pkg_env(tmp_path, monkeypatch):
 
 
 class TestSplitVolumeFetch:
+    def test_hf_snapshot_file_symlink_is_validated_and_installed(self, pkg_env):
+        with tarfile.open(pkg_env.tar_path, "w:gz") as tar:
+            blob = tarfile.TarInfo(f"{SUBDIR}/blobs/weights")
+            blob.size = 12
+            tar.addfile(blob, io.BytesIO(b"onnx-weights"))
+            link = tarfile.TarInfo(f"{SUBDIR}/snapshots/abc123/onnx/model.onnx")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "../../../blobs/weights"
+            tar.addfile(link)
+        digest = hashlib.sha256(pkg_env.tar_path.read_bytes()).hexdigest()
+        reranker = pkg_env.install([{"url": pkg_env.tar_path.as_uri()}], sha256=digest)
+        assert reranker._fetch_release_package() is True
+        installed = pkg_env.cache / SUBDIR / "snapshots/abc123/onnx/model.onnx"
+        assert installed.read_bytes() == b"onnx-weights"
+        assert installed.resolve().is_relative_to(pkg_env.cache / SUBDIR)
+
+    def test_hf_snapshot_symlink_outside_archive_is_rejected(self, pkg_env):
+        with tarfile.open(pkg_env.tar_path, "w:gz") as tar:
+            link = tarfile.TarInfo(f"{SUBDIR}/snapshots/abc123/onnx/model.onnx")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "../../../../../outside-weights"
+            tar.addfile(link)
+        digest = hashlib.sha256(pkg_env.tar_path.read_bytes()).hexdigest()
+        reranker = pkg_env.install([{"url": pkg_env.tar_path.as_uri()}], sha256=digest)
+        assert reranker._fetch_release_package() is False
+        assert not (pkg_env.cache / SUBDIR).exists()
+
+    @pytest.mark.parametrize("outside", ["weights", "another-model/blobs/weights"])
+    def test_symlink_to_archive_sibling_cannot_install_a_broken_model(self, pkg_env, outside):
+        with tarfile.open(pkg_env.tar_path, "w:gz") as tar:
+            blob = tarfile.TarInfo(outside)
+            blob.size = 12
+            tar.addfile(blob, io.BytesIO(b"onnx-weights"))
+            link = tarfile.TarInfo(f"{SUBDIR}/snapshots/abc123/onnx/model.onnx")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "../../../../" + outside
+            tar.addfile(link)
+        digest = hashlib.sha256(pkg_env.tar_path.read_bytes()).hexdigest()
+        reranker = pkg_env.install([{"url": pkg_env.tar_path.as_uri()}], sha256=digest)
+        try:
+            assert reranker._fetch_release_package() is False
+            assert list(pkg_env.cache.iterdir()) == []
+        finally:
+            reranker.close()
+
     def test_parts_are_joined_in_order_and_installed(self, pkg_env):
         """10 卷按序拼回整包 → 摘要通过 → 缓存落地为 HF 布局,可被命中。"""
         urls = _split(pkg_env.tar_path, pkg_env.src, 10)

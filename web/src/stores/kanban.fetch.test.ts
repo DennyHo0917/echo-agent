@@ -37,6 +37,27 @@ afterEach(() => {
 });
 
 describe("fetchTasks 合并服务端快照", () => {
+  it("task_created 先到时,迟到的创建响应不重复插卡或覆盖新状态", async () => {
+    let release: (value: { task: TaskCard }) => void = () => {};
+    vi.spyOn(api, "apiFetch").mockImplementation(
+      () => new Promise((resolve) => { release = resolve as typeof release; }),
+    );
+    const pending = useKanbanStore.getState().createTask("new");
+    useKanbanStore.getState().addLocal(task("created"));
+    useKanbanStore.getState().updateLocal("created", { status: "running" });
+    release({ task: task("created") });
+    expect(await pending).toBe(true);
+    expect(useKanbanStore.getState().tasks).toHaveLength(1);
+    expect(useKanbanStore.getState().tasks[0].status).toBe("running");
+  });
+
+  it("HTTP 创建响应先到时,task_created 事件也只保留一张卡", async () => {
+    vi.spyOn(api, "apiFetch").mockResolvedValue({ task: task("created") });
+    expect(await useKanbanStore.getState().createTask("new")).toBe(true);
+    useKanbanStore.getState().addLocal(task("created"));
+    expect(useKanbanStore.getState().tasks).toHaveLength(1);
+  });
+
   it("不冲掉请求飞行期间 WS 写入的新任务", async () => {
     // 请求发出后、resolve 之前,WS 推来一个快照里还不存在的任务。
     let release: (value: { tasks: TaskCard[] }) => void = () => {};

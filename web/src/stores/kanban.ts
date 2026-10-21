@@ -236,7 +236,9 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
         body: JSON.stringify({ title, description, source: "human" }),
       });
       set((s) => ({
-        tasks: [...s.tasks, data.task],
+        // task_created may precede this HTTP response. Keep that record (and
+        // any newer transition already received) instead of inserting twice.
+        tasks: s.tasks.some((task) => task.id === data.task.id) ? s.tasks : [...s.tasks, data.task],
         dirtyIds: new Set(s.dirtyIds).add(data.task.id),
       }));
       return true;

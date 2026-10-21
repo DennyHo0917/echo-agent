@@ -2,6 +2,7 @@
   "loading": "加载中…",
   "newPlaceholder": "新建任务…",
   "create": "创建",
+  "creating": "创建中…",
   "autoClaimHint": "收件箱里的任务点“开始执行”(或拖到“排队中”)后,Agent 会自动认领执行。",
   "showArchived": "显示已取消 / 挂起",
   "emptyColumn": "暂无任务",

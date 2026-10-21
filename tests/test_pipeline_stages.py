@@ -13,6 +13,46 @@ from echo_agent.bus.events import InboundEvent
 from echo_agent.session.manager import Session
 
 
+@pytest.mark.parametrize("text", [
+    "Do not create files. Reply with two numbers only.",
+    "Don't generate a report. Give the total in one sentence.",
+    "不要创建文件，请直接给出总数。",
+    "Use write_file to create qa-result.json with the totals.",
+    "Read qa-sales.csv. Do not create files, use exec, or change tasks yourself. Report both numbers.",
+])
+def test_artifact_routing_respects_file_negation_and_tool_identifiers(text):
+    assert ContextStage._expects_artifact(text) is False
+
+
+def test_artifact_routing_preserves_positive_request_after_a_prohibition():
+    assert ContextStage._expects_artifact("Do not create a draft; create the final report.") is True
+
+
+@pytest.mark.parametrize("text", [
+    "不要生成草稿，生成最终报告。", "不要创建草稿；请创建最终报告。",
+    "请勿生成草稿。请生成最终报告。", "不需要创建草稿\n请创建完整报告",
+    "Do not create a draft, but create the final report.",
+    "Can you create a v1.2 report?",
+    "Create a U.S. tax report.",
+    "请写一份关于销售、现金流、风险的完整报告",
+    "Write an analysis of sales, cashflow and risks as a detailed report.",
+])
+def test_artifact_routing_keeps_positive_clauses_and_subject_lists(text):
+    assert ContextStage._expects_artifact(text) is True
+
+
+@pytest.mark.parametrize("text", [
+    "不要生成报告，只要数字。", "请勿生成报告，只要数字。",
+    "Write a short reply. Do not create files.",
+    "Do not generate a report for download.",
+    "Please do not create the document as a file.",
+    "Write a short answer, but do not create a report for download.",
+    "不要生成草稿，禁止创建报告。",
+])
+def test_artifact_routing_cannot_bypass_a_negated_clause(text):
+    assert ContextStage._expects_artifact(text) is False
+
+
 class TestPipelineTypes:
     def test_pipeline_context_defaults(self):
         event = InboundEvent.text_message(channel="test", sender_id="u1", chat_id="c1", text="hi")

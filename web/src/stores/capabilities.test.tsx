@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { Sidebar } from "../components/Sidebar";
-import { useCapabilitiesStore } from "./capabilities";
+import { useCapabilitiesStore, useAuthRequired, useIsAdmin } from "./capabilities";
 import { useAuthStore } from "./auth";
 import * as api from "../lib/api";
 import { TOKEN_STORAGE_KEY } from "../lib/api";
@@ -86,6 +86,29 @@ describe("capabilities 探测", () => {
 });
 
 describe("auth 与 capabilities 联动", () => {
+  it("登出后已挂载的认证探测重新运行,不让 Layout 永久等待 null", async () => {
+    const probe = vi.spyOn(api, "apiFetch").mockResolvedValue({ admin: false, authRequired: true });
+    useAuthStore.getState().setToken("api-token");
+    useCapabilitiesStore.setState({ admin: false, authRequired: true });
+    function Status() { return <span>{String(useAuthRequired())}</span>; }
+    render(<Status />);
+    expect(screen.getByText("true")).toBeInTheDocument();
+    act(() => useAuthStore.getState().logout());
+    await waitFor(() => expect(probe).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByText("true")).toBeInTheDocument());
+  });
+
+  it("已挂载的权限消费者在换令牌后重新探测", async () => {
+    const probe = vi.spyOn(api, "apiFetch").mockResolvedValue({ admin: true, authRequired: true });
+    useCapabilitiesStore.setState({ admin: false, authRequired: true });
+    function Status() { return <span>{String(useIsAdmin())}</span>; }
+    render(<Status />);
+    expect(screen.getByText("false")).toBeInTheDocument();
+    act(() => useAuthStore.getState().setToken("new-admin"));
+    await waitFor(() => expect(probe).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByText("true")).toBeInTheDocument());
+  });
+
   it("换令牌登录后重置探测结果,避免沿用上一个令牌的权限", async () => {
     vi.spyOn(api, "apiFetch").mockResolvedValue({ admin: false });
     await useCapabilitiesStore.getState().probe();
