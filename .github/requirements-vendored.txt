@@ -1,0 +1,4 @@
+# Only the upstream component itself: its patched runtime dependencies are
+# declared in pyproject.toml and audited from the installed environment.
+# Keep this version aligned with echo_agent/_vendor/fastembed/VENDOR.md.
+fastembed==0.9.0

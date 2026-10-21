@@ -36,7 +36,7 @@ async def test_embed_uses_fastembed_and_caches_model():
     fake_model.embed.return_value = iter([np.array([0.1, 0.2], dtype=np.float32)])
     fake_cls = MagicMock(return_value=fake_model)
     fake_mod = MagicMock(TextEmbedding=fake_cls)
-    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+    with patch.dict(sys.modules, {"echo_agent._vendor.fastembed": fake_mod}):
         e = LocalEmbedder("BAAI/bge-small-zh-v1.5")
         vec = await e.embed("你好世界")
         assert vec == pytest.approx([0.1, 0.2], abs=1e-6)
@@ -55,7 +55,7 @@ async def test_hf_endpoint_injected_before_load(monkeypatch):
     fake_model = MagicMock()
     fake_model.embed.return_value = iter([np.array([0.1], dtype=np.float32)])
     fake_mod = MagicMock(TextEmbedding=MagicMock(return_value=fake_model))
-    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+    with patch.dict(sys.modules, {"echo_agent._vendor.fastembed": fake_mod}):
         import os
         e = LocalEmbedder("BAAI/bge-small-zh-v1.5", hf_endpoint="https://hf-mirror.com")
         await e.embed("text")
@@ -70,7 +70,7 @@ async def test_hf_endpoint_does_not_override_env(monkeypatch):
     fake_model = MagicMock()
     fake_model.embed.return_value = iter([np.array([0.1], dtype=np.float32)])
     fake_mod = MagicMock(TextEmbedding=MagicMock(return_value=fake_model))
-    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+    with patch.dict(sys.modules, {"echo_agent._vendor.fastembed": fake_mod}):
         import os
         e = LocalEmbedder("BAAI/bge-small-zh-v1.5", hf_endpoint="https://hf-mirror.com")
         await e.embed("text")
@@ -85,7 +85,7 @@ async def test_empty_hf_endpoint_leaves_env_untouched(monkeypatch):
     fake_model = MagicMock()
     fake_model.embed.return_value = iter([np.array([0.1], dtype=np.float32)])
     fake_mod = MagicMock(TextEmbedding=MagicMock(return_value=fake_model))
-    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+    with patch.dict(sys.modules, {"echo_agent._vendor.fastembed": fake_mod}):
         import os
         e = LocalEmbedder("BAAI/bge-small-zh-v1.5", hf_endpoint="")
         await e.embed("text")
@@ -95,7 +95,7 @@ async def test_empty_hf_endpoint_leaves_env_untouched(monkeypatch):
 @pytest.mark.asyncio
 async def test_embed_returns_none_on_load_failure():
     fake_mod = MagicMock(TextEmbedding=MagicMock(side_effect=RuntimeError("download failed")))
-    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+    with patch.dict(sys.modules, {"echo_agent._vendor.fastembed": fake_mod}):
         e = LocalEmbedder("BAAI/bge-small-zh-v1.5")
         assert await e.embed("text") is None
         # 失败后不无限重试加载：第二次直接 None
@@ -105,7 +105,7 @@ async def test_embed_returns_none_on_load_failure():
 
 @pytest.mark.asyncio
 async def test_embed_returns_none_when_fastembed_missing():
-    with patch.dict(sys.modules, {"fastembed": None}):
+    with patch.dict(sys.modules, {"echo_agent._vendor.fastembed": None}):
         e = LocalEmbedder("BAAI/bge-small-zh-v1.5")
         assert e.available is False
         assert await e.embed("text") is None
@@ -129,7 +129,7 @@ async def test_embed_returns_none_after_close():
     import numpy as np
     fake_model.embed.return_value = iter([np.array([0.1, 0.2], dtype=np.float32)])
     fake_mod = MagicMock(TextEmbedding=MagicMock(return_value=fake_model))
-    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+    with patch.dict(sys.modules, {"echo_agent._vendor.fastembed": fake_mod}):
         e = LocalEmbedder("BAAI/bge-small-zh-v1.5")
         e.close()
         assert await e.embed("text") is None
@@ -158,7 +158,7 @@ async def test_embed_degrades_on_load_hang_then_recovers():
         return fake_model
 
     fake_mod = MagicMock(TextEmbedding=MagicMock(side_effect=_slow_load))
-    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+    with patch.dict(sys.modules, {"echo_agent._vendor.fastembed": fake_mod}):
         # Tiny per-call budget: the first turn degrades while the load runs on.
         e = LocalEmbedder("BAAI/bge-small-zh-v1.5", load_timeout_seconds=0.05)
         assert await e.embed("text") is None
@@ -185,7 +185,7 @@ async def test_load_failure_retries_after_backoff():
     # First construction attempt fails, second succeeds.
     fake_cls = MagicMock(side_effect=[RuntimeError("net down"), fake_model])
     fake_mod = MagicMock(TextEmbedding=fake_cls)
-    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+    with patch.dict(sys.modules, {"echo_agent._vendor.fastembed": fake_mod}):
         e = LocalEmbedder(
             "BAAI/bge-small-zh-v1.5", load_timeout_seconds=1.0,
             max_load_attempts=5, retry_backoff_seconds=999.0,
@@ -207,7 +207,7 @@ async def test_load_stops_after_max_attempts():
     """连续失败达到上限后本进程不再尝试加载（保持关键词检索直到重启）。"""
     fake_cls = MagicMock(side_effect=RuntimeError("net down"))
     fake_mod = MagicMock(TextEmbedding=fake_cls)
-    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+    with patch.dict(sys.modules, {"echo_agent._vendor.fastembed": fake_mod}):
         e = LocalEmbedder(
             "BAAI/bge-small-zh-v1.5", load_timeout_seconds=1.0,
             max_load_attempts=2, retry_backoff_seconds=0.0,
@@ -227,7 +227,7 @@ async def test_cache_dir_passed_to_fastembed():
     fake_model.embed.return_value = iter([np.array([0.1], dtype=np.float32)])
     fake_cls = MagicMock(return_value=fake_model)
     fake_mod = MagicMock(TextEmbedding=fake_cls)
-    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+    with patch.dict(sys.modules, {"echo_agent._vendor.fastembed": fake_mod}):
         e = LocalEmbedder("BAAI/bge-small-zh-v1.5", cache_dir="/tmp/echo-models")
         await e.embed("text")
         _, kwargs = fake_cls.call_args
@@ -242,7 +242,7 @@ async def test_no_cache_dir_omits_kwarg():
     fake_model.embed.return_value = iter([np.array([0.1], dtype=np.float32)])
     fake_cls = MagicMock(return_value=fake_model)
     fake_mod = MagicMock(TextEmbedding=fake_cls)
-    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+    with patch.dict(sys.modules, {"echo_agent._vendor.fastembed": fake_mod}):
         e = LocalEmbedder("BAAI/bge-small-zh-v1.5", cache_dir="")
         await e.embed("text")
         _, kwargs = fake_cls.call_args
@@ -260,7 +260,7 @@ async def test_ready_cache_pins_local_files_only():
     fake_model.embed.return_value = iter([np.array([0.1], dtype=np.float32)])
     fake_cls = MagicMock(return_value=fake_model)
     fake_mod = MagicMock(TextEmbedding=fake_cls)
-    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+    with patch.dict(sys.modules, {"echo_agent._vendor.fastembed": fake_mod}):
         e = LocalEmbedder("BAAI/bge-small-zh-v1.5", cache_dir="/tmp/echo-models")
         with patch.object(e, "_fetch_release_package", return_value=True):
             await e.embed("text")
@@ -276,7 +276,7 @@ async def test_unready_cache_stays_online():
     fake_model.embed.return_value = iter([np.array([0.1], dtype=np.float32)])
     fake_cls = MagicMock(return_value=fake_model)
     fake_mod = MagicMock(TextEmbedding=fake_cls)
-    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+    with patch.dict(sys.modules, {"echo_agent._vendor.fastembed": fake_mod}):
         e = LocalEmbedder("BAAI/bge-small-zh-v1.5", cache_dir="/tmp/echo-models")
         with patch.object(e, "_fetch_release_package", return_value=False):
             await e.embed("text")

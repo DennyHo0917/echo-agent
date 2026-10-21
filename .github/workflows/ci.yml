@@ -100,6 +100,11 @@ jobs:
         # local entry while auditing every installed direct/transitive dependency.
         run: pip-audit --skip-editable
 
+      - name: Audit vendored Python components
+        # Audit upstream FastEmbed itself without resolving its old Pillow cap.
+        # The compatibility copy's complete dependency graph was audited above.
+        run: pip-audit -r .github/requirements-vendored.txt --no-deps --disable-pip
+
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: "10.34.5"
@@ -241,7 +246,16 @@ jobs:
           import zipfile
           from pathlib import Path, PurePosixPath
 
-          marker = "echo_agent/_bundled/dashboard/index.html"
+          markers = (
+              "echo_agent/_bundled/dashboard/index.html",
+              "echo_agent/_vendor/fastembed/__init__.py",
+              "echo_agent/_vendor/fastembed/text/text_embedding.py",
+              "echo_agent/_vendor/fastembed/rerank/cross_encoder/text_cross_encoder.py",
+              "echo_agent/_vendor/fastembed/LICENSE",
+              "echo_agent/_vendor/fastembed/NOTICE",
+              "echo_agent/_vendor/fastembed/VENDOR.md",
+              "echo_agent/_vendor/fastembed/py.typed",
+          )
           wheels = sorted(Path("dist").glob("*.whl"))
           sdists = sorted(Path("dist").glob("*.tar.gz"))
           if len(wheels) != 1 or len(sdists) != 1:
@@ -260,8 +274,9 @@ jobs:
                       # Strip the conventional <name>-<version>/ sdist root.
                       names = {name.split("/", 1)[-1] for name in archive.getnames()}
 
-              if marker not in names:
-                  failures.append(f"{artifact.name} is missing {marker}")
+              for marker in markers:
+                  if marker not in names:
+                      failures.append(f"{artifact.name} is missing {marker}")
 
               stray = [name for name in names if "node_modules" in PurePosixPath(name).parts]
               if stray:
@@ -280,11 +295,14 @@ jobs:
           SMOKE_VENV="${RUNNER_TEMP}/echo-agent-wheel-smoke"
           python -m venv "$SMOKE_VENV"
           "$SMOKE_VENV/bin/python" -m pip install dist/*.whl
+          "$SMOKE_VENV/bin/python" -m pip check
           cd "$RUNNER_TEMP"
           "$SMOKE_VENV/bin/python" - <<'PY'
           from importlib.metadata import version
           from importlib.resources import files
           from echo_agent import __version__
+          from echo_agent._vendor.fastembed import TextEmbedding
+          from echo_agent._vendor.fastembed.rerank.cross_encoder import TextCrossEncoder
 
           dashboard = files("echo_agent").joinpath("_bundled/dashboard/index.html")
           if not dashboard.is_file():
@@ -296,6 +314,7 @@ jobs:
                   f"installed metadata {installed_version!r}"
               )
           print(f"installed echo-agent {installed_version} with Dashboard")
+          print(f"Bundled inference backends: {TextEmbedding.__name__}, {TextCrossEncoder.__name__}")
           PY
           "$SMOKE_VENV/bin/echo-agent" --help >/dev/null
 

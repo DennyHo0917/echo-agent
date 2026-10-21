@@ -109,10 +109,10 @@ SKILL_DEPS: dict[str, tuple[str, ...]] = {
     "skill.reminder": ("croniter>=1.4",),
     "skill.calendar": ("caldav>=1.3", "icalendar>=5.0"),
     "skill.notion-sync": (),  # uses stdlib urllib only
-    "skill.ocr-document": ("pymupdf>=1.24", "python-docx>=1.1", "Pillow>=10.0", "pytesseract>=0.3"),
+    "skill.ocr-document": ("pymupdf>=1.24", "python-docx>=1.1", "Pillow>=13.0.0,<14", "pytesseract>=0.3"),
     "skill.ocr-document.pdf": ("pymupdf>=1.24",),
     "skill.ocr-document.docx": ("python-docx>=1.1",),
-    "skill.ocr-document.image": ("Pillow>=10.0", "pytesseract>=0.3"),
+    "skill.ocr-document.image": ("Pillow>=13.0.0,<14", "pytesseract>=0.3"),
 
     # ─── Inbound document parsing (read side) ─────────────────────────────
     "media.document": ("pymupdf>=1.24", "python-docx>=1.1", "openpyxl>=3.1", "python-pptx>=1.0"),
@@ -127,7 +127,7 @@ SKILL_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Creative skills ──────────────────────────────────────────────────
     "skill.image-gen": (),  # uses API via urllib, no extra deps
     "tool.image-gen-fal": ("fal-client>=0.5",),
-    "skill.meme-gen": ("Pillow>=10.0",),
+    "skill.meme-gen": ("Pillow>=13.0.0,<14",),
     "skill.ppt-author": ("python-pptx>=1.0",),
     "skill.excel-author": ("openpyxl>=3.1",),
 

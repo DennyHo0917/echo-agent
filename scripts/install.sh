@@ -1397,7 +1397,7 @@ import sys
 model_name, cache_dir = sys.argv[1], sys.argv[2]
 release_ready = sys.argv[3] == "1"
 try:
-    from fastembed import TextEmbedding
+    from echo_agent._vendor.fastembed import TextEmbedding
     kwargs = {"model_name": model_name, "cache_dir": cache_dir}
     if release_ready:
         kwargs["local_files_only"] = True
@@ -1420,12 +1420,12 @@ PYEOF
     elif [ "$release_ready" -eq 1 ]; then
         log_warn "Release embedding cache is present but failed offline verification (rc=$rc)."
         log_warn "Memory vector search starts in keyword-only mode. To diagnose locally:"
-        log_warn "  HF_HUB_OFFLINE=1 FASTEMBED_CACHE_PATH='$EMBED_CACHE_DIR' $INSTALL_DIR/venv/bin/python -c \"from fastembed import TextEmbedding; m=TextEmbedding(model_name='$EMBED_MODEL', cache_dir='$EMBED_CACHE_DIR', local_files_only=True); next(iter(m.embed(['预热'])), None)\""
+        log_warn "  HF_HUB_OFFLINE=1 FASTEMBED_CACHE_PATH='$EMBED_CACHE_DIR' $INSTALL_DIR/venv/bin/python -c \"from echo_agent._vendor.fastembed import TextEmbedding; m=TextEmbedding(model_name='$EMBED_MODEL', cache_dir='$EMBED_CACHE_DIR', local_files_only=True); next(iter(m.embed(['预热'])), None)\""
     else
         log_warn "Embedding model prefetch failed or timed out (rc=$rc)."
         log_warn "Memory vector search starts in keyword-only mode and retries the"
         log_warn "download at runtime. To retry now:"
-        log_warn "  HF_HUB_DISABLE_XET='${HF_HUB_DISABLE_XET:-1}' HF_ENDPOINT='${HF_ENDPOINT:-https://hf-mirror.com}' FASTEMBED_CACHE_PATH='$EMBED_CACHE_DIR' $INSTALL_DIR/venv/bin/python -c \"from fastembed import TextEmbedding; m=TextEmbedding(model_name='$EMBED_MODEL', cache_dir='$EMBED_CACHE_DIR'); next(iter(m.embed(['预热'])), None)\""
+        log_warn "  HF_HUB_DISABLE_XET='${HF_HUB_DISABLE_XET:-1}' HF_ENDPOINT='${HF_ENDPOINT:-https://hf-mirror.com}' FASTEMBED_CACHE_PATH='$EMBED_CACHE_DIR' $INSTALL_DIR/venv/bin/python -c \"from echo_agent._vendor.fastembed import TextEmbedding; m=TextEmbedding(model_name='$EMBED_MODEL', cache_dir='$EMBED_CACHE_DIR'); next(iter(m.embed(['预热'])), None)\""
     fi
     return 0
 }
@@ -1593,7 +1593,7 @@ prefetch_reranker_model() {
 import sys
 model_name, cache_dir = sys.argv[1], sys.argv[2]
 try:
-    from fastembed.rerank.cross_encoder import TextCrossEncoder
+    from echo_agent._vendor.fastembed.rerank.cross_encoder import TextCrossEncoder
     enc = TextCrossEncoder(
         model_name=model_name, cache_dir=cache_dir, local_files_only=True
     )

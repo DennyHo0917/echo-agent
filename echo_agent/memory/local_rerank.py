@@ -162,10 +162,10 @@ class LocalReranker:
     def available(self) -> bool:
         # find_spec locates fastembed WITHOUT importing its heavy deps, so this
         # is safe to probe on the loop thread at startup.
-        if sys.modules.get("fastembed") is not None:
+        if sys.modules.get("echo_agent._vendor.fastembed") is not None:
             return True
         try:
-            return importlib.util.find_spec("fastembed") is not None
+            return importlib.util.find_spec("echo_agent._vendor.fastembed") is not None
         except (ImportError, ValueError):
             return False
 
@@ -363,7 +363,7 @@ class LocalReranker:
             os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "15")
             if self._hf_endpoint:
                 os.environ.setdefault("HF_ENDPOINT", self._hf_endpoint)
-            mod = importlib.import_module("fastembed.rerank.cross_encoder")
+            mod = importlib.import_module("echo_agent._vendor.fastembed.rerank.cross_encoder")
             kwargs: dict[str, Any] = {"model_name": self._model_name}
             if self._cache_dir:
                 kwargs["cache_dir"] = self._cache_dir

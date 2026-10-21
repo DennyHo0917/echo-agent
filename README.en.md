@@ -230,3 +230,5 @@ Echo Agent was co-founded by **Yuxiang Fu** and **Yanrong Gao**.
 ## License
 
 Echo Agent is open source under the [MIT License](LICENSE). See the [third-party notices](client/THIRD_PARTY_NOTICES.md) for licenses of components included in the desktop app.
+
+The FastEmbed compatibility copy bundled with the Runtime is licensed under Apache-2.0. See its [maintenance notes](echo_agent/_vendor/fastembed/VENDOR.md) for the source and Pillow 13 compatibility changes.

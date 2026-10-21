@@ -230,3 +230,5 @@ Echo Agent 由 **付玉祥**、**高延荣** 共同发起。
 ## 许可证
 
 Echo Agent 基于 [MIT License](LICENSE) 开源。桌面端所含第三方组件的许可信息见 [第三方许可说明](client/THIRD_PARTY_NOTICES.md)。
+
+Runtime 内置的 FastEmbed 兼容副本使用 Apache-2.0 许可证，来源及 Pillow 13 兼容修改见 [维护说明](echo_agent/_vendor/fastembed/VENDOR.md)。
