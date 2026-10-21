@@ -130,11 +130,18 @@ async def test_record_run_outcome_overwrites_queued(tmp_path) -> None:
     await scheduler._run_job(job)
     assert job.last_status == "queued"  # 入队瞬间
 
-    await scheduler.record_run_outcome("jx", "completed")
+    first_run = scheduler.get_run_history("jx")[0]["run_id"]
+    await scheduler.record_run_outcome("jx", "completed", run_id=first_run)
     assert job.last_status == "completed"
     assert job.last_error == ""
 
-    await scheduler.record_run_outcome("jx", "error", "boom")
+    # A late duplicate cannot overwrite a terminal occurrence. A different run
+    # can fail independently and becomes the job's latest result.
+    await scheduler.record_run_outcome("jx", "error", "late", run_id=first_run)
+    assert job.last_status == "completed"
+    await scheduler._run_job(job)
+    second_run = scheduler.get_run_history("jx")[0]["run_id"]
+    await scheduler.record_run_outcome("jx", "error", "boom", run_id=second_run)
     assert job.last_status == "error"
     assert job.last_error == "boom"
     assert scheduler.get_run_history("jx")[0]["status"] == "error"

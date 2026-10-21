@@ -29,14 +29,14 @@
 
 ## 顶层配置节
 
-配置树共 33 个配置节加 1 个标量字段 `workspace`。按用途分组如下：
+配置树共 34 个配置节加 1 个标量字段 `workspace`。按用途分组如下：
 
 | 分组 | 配置节 |
 |------|--------|
 | 模型与推理 | `models`、`agent`、`planning`、`compression` |
 | 工具与执行 | `tools`、`execution`、`permissions`、`security` |
 | 通道与网关 | `channels`、`gateway`、`bus`、`a2a` |
-| 记忆与知识 | `memory`、`knowledge`、`session`、`spill` |
+| 记忆与知识 | `memory`、`knowledge`、`session`、`spill`、`artifacts` |
 | 任务与技能 | `scheduler`、`skills`、`evolution`、`multi_agent` |
 | 运行与运维 | `runtime`、`storage`、`checkpoint`、`observability` |
 | 成本与稳定性 | `cost`、`rate_limit`、`circuit_breaker` |
@@ -116,7 +116,7 @@ gateway:
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-其二，用环境变量覆盖对应配置项（仅适用于标量字段，列表类型不支持）：
+其二，用环境变量覆盖对应配置项（标量按 schema 转换，列表/字典字段接受 JSON）：
 
 ```bash
 export ECHO_AGENT_MODELS__DEFAULT_MODEL=claude-sonnet-4-5
@@ -142,7 +142,7 @@ echo-agent config validate
 | 命令 | 作用 |
 |------|------|
 | `echo-agent config validate` | 校验配置合法性 |
-| `echo-agent config dump` | 输出合并后实际生效的配置（凭据自动脱敏），可加 `--format json` |
+| `echo-agent config dump` | 输出当前文件与环境合并后的配置（不查询常驻 Runtime）（凭据自动脱敏），可加 `--format json` |
 | `echo-agent config explain <key>` | 解释某个配置项，接受点分路径 |
 | `echo-agent config gen-docs` | 重新生成配置参考页 |
 

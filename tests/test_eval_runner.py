@@ -222,6 +222,8 @@ async def test_run_dataset_gather_exception_becomes_error_result():
     assert report.passed_cases == 0
     assert len(report.results) == 1
     assert "gather-level failure" in report.results[0].error
+    assert report.results[0].case_id == "c1"
+    assert report.results[0].inconclusive
 
 
 # ---------------------------------------------------------------------------

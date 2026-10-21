@@ -12,7 +12,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import time
+import asyncio
+import mimetypes
+from pathlib import Path
 from typing import Any
 
 from aiohttp import web
@@ -21,8 +25,9 @@ from loguru import logger
 
 from echo_agent.bus.events import OutboundEvent
 from echo_agent.bus.queue import MessageBus
-from echo_agent.channels.base import BaseChannel, SendResult
+from echo_agent.channels.base import BaseChannel, SendResult, DeliveryRejected
 from echo_agent.config.schema import WhatsAppChannelConfig
+from echo_agent.utils.text import split_message
 
 _GRAPH_API = "https://graph.facebook.com/v21.0"
 _REPLAY_WINDOW_SECONDS = 3600
@@ -31,6 +36,7 @@ _MAX_SEEN_IDS = 10000
 
 class WhatsAppChannel(BaseChannel):
     name = "whatsapp"
+    supports_files = True
 
     def __init__(self, config: WhatsAppChannelConfig, bus: MessageBus):
         super().__init__(config, bus)
@@ -46,6 +52,8 @@ class WhatsAppChannel(BaseChannel):
         self._bot_phone: str = ""
 
     async def start(self) -> None:
+        if not self._app_secret or not self._verify_token:
+            raise ValueError("WhatsApp requires app_secret and verify_token for authenticated callbacks")
         self._session = aiohttp.ClientSession(headers={
             "Authorization": f"Bearer {self._access_token}",
         })
@@ -83,30 +91,79 @@ class WhatsAppChannel(BaseChannel):
 
         url = f"{_GRAPH_API}/{self._phone_id}/messages"
 
+        payloads = []
+        uploads = {}
         for block in media_blocks:
             media_type = block.type.value if block.type.value in ("image", "audio", "video", "file") else "image"
-            media_result = await self._send_media(url, event.chat_id, media_type, block.url)
-            if not media_result.success:
-                return media_result
+            wa_type = "document" if media_type == "file" else media_type
+            if block.url.startswith(("https://", "http://")):
+                payloads.append({"messaging_product": "whatsapp", "to": event.chat_id, "type": wa_type,
+                                 wa_type: {"link": block.url}})
+            else:
+                try:
+                    def read_attachment():
+                        path = Path(block.url)
+                        if not path.is_file():
+                            raise ValueError("WhatsApp attachment must be a regular local file")
+                        with path.open("rb") as source:
+                            data = source.read(self._max_media_download_bytes + 1)
+                        if not data or len(data) > self._max_media_download_bytes:
+                            raise ValueError("WhatsApp attachment is empty or exceeds the local size limit")
+                        return path.name, data
+                    name, data = await asyncio.to_thread(read_attachment)
+                except (ValueError, OSError) as exc:
+                    return SendResult(success=False, error=self.safe_delivery_error(exc))
+                index = len(payloads)
+                mime = block.mime_type or mimetypes.guess_type(name)[0] or "application/octet-stream"
+                uploads[index] = (name, mime, data)
+                # Stable local content identity precedes the remote upload ID.
+                payloads.append({"_upload": True, "name": name, "mime": mime, "source": block.url,
+                                 "digest": hashlib.sha256(data).hexdigest(), "type": wa_type})
 
         if text:
-            payload = {
-                "messaging_product": "whatsapp",
-                "to": event.chat_id,
-                "type": "text",
-                "text": {"body": text},
-            }
-            try:
-                async with self._session.post(url, json=payload) as resp:
-                    if resp.status >= 400:
-                        body = await resp.text()
-                        logger.warning("WhatsApp send failed ({}): {}", resp.status, body[:200])
-                        return SendResult(success=False, error=body[:200])
-            except Exception as e:
-                logger.error("WhatsApp send error: {}", e)
-                return SendResult(success=False, error=str(e))
+            payloads.extend({"messaging_product": "whatsapp", "to": event.chat_id, "type": "text",
+                             "text": {"body": chunk}}
+                            for chunk in split_message(text, 4000, preserve_whitespace=True))
 
-        return SendResult(success=True)
+        async def send_part(index, part):
+            payload = json.loads(part)
+            if payload.get("_upload"):
+                name, mime, data = uploads[index]
+                form = aiohttp.FormData()
+                form.add_field("messaging_product", "whatsapp")
+                form.add_field("type", mime)
+                form.add_field("file", data, filename=name, content_type=mime)
+                try:
+                    async with self._session.post(f"{_GRAPH_API}/{self._phone_id}/media", data=form) as response:
+                        uploaded = await response.json()
+                        media_id = uploaded.get("id") if isinstance(uploaded, dict) else None
+                        if response.status >= 400 or not isinstance(media_id, str) or not media_id:
+                            raise ValueError(f"WhatsApp upload failed (HTTP {response.status})")
+                except Exception as exc:
+                    # Uploading a blob alone cannot deliver a message. A failed
+                    # upload can safely release the pending message checkpoint.
+                    raise DeliveryRejected(self.safe_delivery_error(exc)) from exc
+                wa_type = payload["type"]
+                payload = {"messaging_product": "whatsapp", "to": event.chat_id, "type": wa_type,
+                           wa_type: {"id": media_id}}
+            return await self._post_payload(url, payload)
+        return await self.send_parts(event, [json.dumps(payload, sort_keys=True) for payload in payloads], send_part)
+
+    async def _post_payload(self, url: str, payload: dict[str, Any]) -> SendResult:
+        try:
+            async with self._session.post(url, json=payload) as resp:
+                if resp.status >= 400:
+                    detail = self.safe_delivery_error(RuntimeError((await resp.text())[:200]))
+                    return SendResult(success=False, error=f"WhatsApp HTTP {resp.status}: {detail}",
+                                      delivery_unknown=resp.status >= 500)
+                data = await resp.json()
+                messages = data.get("messages") if isinstance(data, dict) else None
+                receipt = messages[0].get("id") if isinstance(messages, list) and messages and isinstance(messages[0], dict) else None
+                if not isinstance(receipt, str) or not receipt:
+                    return SendResult(success=False, error="WhatsApp send receipt missing", delivery_unknown=True)
+                return SendResult(success=True, message_id=receipt)
+        except Exception as exc:
+            return SendResult(success=False, error=self.safe_delivery_error(exc), delivery_unknown=True)
 
     async def _send_media(
         self, url: str, to: str, media_type: str, media_url: str, *, caption: str | None = None,
@@ -127,26 +184,19 @@ class WhatsAppChannel(BaseChannel):
         if caption and wa_type in ("image", "document"):
             payload[wa_type]["caption"] = caption
 
-        try:
-            async with self._session.post(url, json=payload) as resp:
-                if resp.status >= 400:
-                    body = await resp.text()
-                    logger.warning("WhatsApp media send failed ({}): {}", resp.status, body[:200])
-                    return SendResult(success=False, error=body[:200])
-        except Exception as e:
-            logger.error("WhatsApp media send error: {}", e)
-            return SendResult(success=False, error=str(e))
-        return SendResult(success=True)
+        return await self._post_payload(url, payload)
 
     async def _verify(self, request: web.Request) -> web.Response:
         mode = request.query.get("hub.mode")
         token = request.query.get("hub.verify_token")
         challenge = request.query.get("hub.challenge", "")
-        if mode == "subscribe" and token == self._verify_token:
+        if self._verify_token and mode == "subscribe" and token == self._verify_token:
             return web.Response(text=challenge)
         return web.Response(status=403, text="Forbidden")
 
     async def _webhook(self, request: web.Request) -> web.Response:
+        if not self._app_secret:
+            return web.json_response({"error": "webhook authentication is not configured"}, status=403)
         # Read raw body first — needed for HMAC verification before JSON parsing
         raw_body = await request.read()
 
@@ -163,6 +213,8 @@ class WhatsAppChannel(BaseChannel):
         except Exception as e:
             logger.debug("Invalid JSON in WhatsApp webhook: {}", e)
             return web.json_response({"error": "invalid json"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "json body must be an object"}, status=400)
 
         for entry in data.get("entry", []):
             for change in entry.get("changes", []):
@@ -173,7 +225,9 @@ class WhatsAppChannel(BaseChannel):
 
                 contacts = value.get("contacts", [])
                 for msg in value.get("messages", []):
-                    await self._process_message(msg, value, contacts)
+                    async with self.bus.delivery_lock(f"ingress:whatsapp:{msg.get('id', '')}"):
+                        if await self._process_message(msg, value, contacts) is False:
+                            return web.json_response({"error": "runtime busy; retry later"}, status=503)
 
         return web.json_response({"status": "ok"})
 
@@ -193,13 +247,13 @@ class WhatsAppChannel(BaseChannel):
         ).hexdigest()
         return hmac.compare_digest(computed, expected_hex)
 
-    async def _process_message(self, msg: dict[str, Any], value: dict[str, Any], contacts: list[dict]) -> None:
+    async def _process_message(self, msg: dict[str, Any], value: dict[str, Any], contacts: list[dict]) -> bool:
         msg_id = msg.get("id", "")
 
         # Replay protection: skip already-processed messages
         if msg_id and self._is_replay(msg_id):
             logger.debug("WhatsApp replay detected: {}", msg_id)
-            return
+            return True
 
         sender = msg.get("from", "")
         msg_type = msg.get("type", "")
@@ -207,7 +261,7 @@ class WhatsAppChannel(BaseChannel):
         # Sender allowlist check
         if not self.is_allowed(sender):
             logger.debug("WhatsApp message from non-allowed sender: {}", sender)
-            return
+            return True
 
         # Group detection
         is_group = msg.get("from", "").startswith("group:")
@@ -254,22 +308,26 @@ class WhatsAppChannel(BaseChannel):
                     media.append({"type": "video", "url": local_path})
 
         if not text and not media:
-            return
+            return True
 
         # Group mention policy
         if is_group and self._group_policy == "mention":
             # Check if bot is mentioned (WhatsApp uses @phone_number format)
             if f"@{self._bot_phone}" not in text:
-                return
+                return True
 
-        await self._handle_message(
+        inbound = await self._handle_message(
             sender_id=sender,
             chat_id=chat_id,
             text=text,
             media=media if media else None,
             metadata={"message_type": msg_type, "message_id": msg_id},
             is_group=is_group,
+            event_id=self._native_event_id(chat_id, msg_id),
         )
+        if inbound is None and msg_id:
+            self._seen_message_ids.pop(msg_id, None)
+        return inbound is not None
 
     def _is_replay(self, message_id: str) -> bool:
         """Check if message ID was already processed (replay protection)."""

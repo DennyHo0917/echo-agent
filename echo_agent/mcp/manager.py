@@ -50,6 +50,8 @@ class MCPManager:
         self._registry: ToolRegistry | None = None
         # One supervisor task per server, watching for connection loss.
         self._supervisors: dict[str, asyncio.Task] = {}
+        self._refresh_tasks: dict[str, asyncio.Task] = {}
+        self._refresh_pending: set[str] = set()
         # Serialises registry mutations so a supervisor re-registering cannot
         # interleave with discovery or shutdown.
         self._registry_lock = asyncio.Lock()
@@ -83,6 +85,13 @@ class MCPManager:
 
     async def stop_all(self) -> None:
         self._stopping = True
+        refreshes = list(self._refresh_tasks.values())
+        for task in refreshes:
+            task.cancel()
+        if refreshes:
+            await asyncio.gather(*refreshes, return_exceptions=True)
+        self._refresh_tasks.clear()
+        self._refresh_pending.clear()
 
         for task in self._supervisors.values():
             task.cancel()
@@ -162,13 +171,33 @@ class MCPManager:
         return client if client is not None and client.is_connected else None
 
     def assert_extension_healthy(self, name: str | None = None) -> None:
-        """Block model and direct native paths after a remembered policy failure."""
+        """Block calls while a notified policy is unverified or has failed."""
         if name is not None:
             error = self._extension_errors.get(name)
         else:
             error = next(iter(self._extension_errors.values()), None)
         if error is not None:
             raise error
+        if self._extension is None:
+            return
+
+        # A list_changed notification invalidates a trusted extension's policy
+        # snapshot immediately. Keep the old registry directory for an atomic
+        # swap, but do not admit native commands or tool side effects before
+        # the queued rebuild validates its replacement. The rebuild itself is
+        # trusted code and may resolve its connection while building adapters.
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:  # A synchronous integration may inspect health.
+            current = None
+        servers = [name] if name is not None else self._refresh_tasks
+        for server in servers:
+            task = self._refresh_tasks.get(server)
+            if task is not None and not task.done() and task is not current:
+                raise RuntimeExtensionError(
+                    f"runtime extension MCP directory refresh pending for '{server}'; "
+                    "retry after refresh completes"
+                )
 
     async def refresh_tools(self, name: str) -> bool:
         """Refresh stateless project directories before a turn; no restart or SSE notification required."""
@@ -444,22 +473,46 @@ class MCPManager:
         inform us. Now it triggers re-discovery, which is the whole reason the
         notification exists.
         """
-        if method != "notifications/tools/list_changed":
+        if self._stopping or method != "notifications/tools/list_changed":
             return
         registry = self._registry
         client = self._clients.get(name)
         if registry is None or client is None or not client.is_connected:
             return
 
+        # Called by MCPClient's sole reader. Awaiting a tools/list RPC here
+        # blocks that same reader from consuming its response. Coalesce bursts
+        # into one owned background refresh and leave the reader available.
+        current = self._refresh_tasks.get(name)
+        if current is not None and not current.done():
+            self._refresh_pending.add(name)
+            return
+        self._refresh_tasks[name] = asyncio.create_task(
+            self._refresh_after_notification(name), name=f"mcp-refresh:{name}",
+        )
+
+    async def _refresh_after_notification(self, name: str) -> None:
         logger.info("MCP server '{}' reported a tool list change — re-discovering", name)
-        async with self._registry_lock:
-            self._unregister_server_tools(name)
-            try:
-                await self._register_server_tools(name, client, registry)
-            except RuntimeExtensionError:
-                raise
-            except Exception as e:
-                logger.error("Re-discovery after list_changed failed for '{}': {}", name, e)
+        try:
+            # Reuse the existing atomic directory replacement and policy checks.
+            while not self._stopping:
+                self._refresh_pending.discard(name)
+                refreshed = await self.refresh_tools(name)
+                if not refreshed and self._extension is not None:
+                    # An unavailable directory is not evidence that an
+                    # invalidated trusted policy remains safe to execute.
+                    failure = RuntimeExtensionError("runtime extension MCP directory refresh failed")
+                    self._extension_errors[name] = failure
+                    self._unregister_server_tools(name)
+                    raise failure
+                if name not in self._refresh_pending:
+                    break
+        except RuntimeExtensionError as exc:
+            logger.error("Re-discovery policy rejected for '{}': {}", name, exc)
+        finally:
+            if self._refresh_tasks.get(name) is asyncio.current_task():
+                self._refresh_tasks.pop(name, None)
+                self._refresh_pending.discard(name)
 
     # ── transports ──────────────────────────────────────────────────────────
 

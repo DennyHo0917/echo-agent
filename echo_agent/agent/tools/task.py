@@ -17,10 +17,10 @@ class TaskTool(Tool):
     description = (
         "Manage tasks with full lifecycle tracking. Actions: "
         "create, list, get, start, complete, fail, cancel, retry, update. "
-        "Workflow steps are queued as tasks carrying tool_name/tool_params in "
-        "metadata: YOU are the executor — 'start' the task, run the tool "
-        "yourself, then 'complete' (or 'fail') it; completing a workflow step "
-        "automatically advances its workflow to queue the next steps."
+        "'start' queues a task for the Runtime dispatcher; only the dispatcher "
+        "starts an execution attempt. Workflow steps are Agent tasks, and their "
+        "terminal results automatically advance the workflow. Use get/list to "
+        "inspect progress, rather than executing another queued task yourself."
     )
     parameters = {
         "type": "object",
@@ -95,31 +95,48 @@ class TaskTool(Tool):
                 return ToolResult(output=json.dumps(task.to_dict(), ensure_ascii=False, indent=2))
 
             if action == "start":
-                task = await self._mgr.transition(params["task_id"], TaskStatus.RUNNING)
-                return ToolResult(output=f"Task {task.id} started")
+                task = await self._mgr.get(params["task_id"])
+                if task is None:
+                    return ToolResult(success=False, error="Task not found")
+                if task.status == TaskStatus.RUNNING:
+                    return ToolResult(success=False, error="Task is already running; inspect its progress instead")
+                if task.status != TaskStatus.QUEUED:
+                    task = await self._mgr.transition(params["task_id"], TaskStatus.QUEUED)
+                return ToolResult(output=f"Task {task.id} queued for execution by the dispatcher")
 
             if action == "complete":
                 # 状态机不允许 RUNNING→SUCCESS 直达(须经 REVIEW)。agent 视角的
                 # "complete"就是"做完了",自动补上 REVIEW 过渡——否则 complete
                 # 对 RUNNING 任务必然抛 Invalid transition,驱动闭环卡死。
+                execution = ({"expected_inbound_event_id": ctx.inbound_event_id}
+                             if ctx and ctx.inbound_event_id and ctx.session_key.startswith("task:") else {})
                 task = await self._mgr.get(params["task_id"])
                 if task is not None and task.status == TaskStatus.RUNNING:
-                    await self._mgr.transition(params["task_id"], TaskStatus.REVIEW)
-                task = await self._mgr.transition(params["task_id"], TaskStatus.SUCCESS, result=params.get("result", ""))
+                    await self._mgr.transition(params["task_id"], TaskStatus.REVIEW, **execution)
+                task = await self._mgr.transition(params["task_id"], TaskStatus.SUCCESS,
+                                                  result=params.get("result", ""), **execution)
                 await self._advance_workflow(task)
                 return ToolResult(output=f"Task {task.id} completed")
 
             if action == "fail":
-                task = await self._mgr.transition(params["task_id"], TaskStatus.FAILED, error=params.get("error", ""))
+                execution = ({"expected_inbound_event_id": ctx.inbound_event_id}
+                             if ctx and ctx.inbound_event_id and ctx.session_key.startswith("task:") else {})
+                task = await self._mgr.transition(params["task_id"], TaskStatus.FAILED,
+                                                  error=params.get("error", ""), **execution)
                 await self._advance_workflow(task)
                 return ToolResult(output=f"Task {task.id} failed")
 
             if action == "cancel":
-                task = await self._mgr.cancel(params["task_id"])
+                execution = ({"expected_inbound_event_id": ctx.inbound_event_id}
+                             if ctx and ctx.inbound_event_id and ctx.session_key == f"task:{params['task_id']}" else {})
+                task = await self._mgr.cancel(params["task_id"], **execution)
+                await self._advance_workflow(task)
                 return ToolResult(output=f"Task {task.id} cancelled")
 
             if action == "retry":
-                task = await self._mgr.retry(params["task_id"])
+                execution = ({"expected_inbound_event_id": ctx.inbound_event_id}
+                             if ctx and ctx.inbound_event_id and ctx.session_key == f"task:{params['task_id']}" else {})
+                task = await self._mgr.retry(params["task_id"], **execution)
                 return ToolResult(output=f"Task {task.id} retrying (attempt {task.retry_count})")
 
             if action == "update":
@@ -127,7 +144,9 @@ class TaskTool(Tool):
                 for k in ("title", "description", "priority"):
                     if k in params:
                         fields[k] = params[k]
-                task = await self._mgr.update(params["task_id"], **fields)
+                execution = ({"expected_inbound_event_id": ctx.inbound_event_id}
+                             if ctx and ctx.inbound_event_id and ctx.session_key == f"task:{params['task_id']}" else {})
+                task = await self._mgr.update(params["task_id"], **fields, **execution)
                 return ToolResult(output=f"Task {task.id} updated")
 
             return ToolResult(success=False, error=f"Unknown action: {action}")

@@ -61,7 +61,7 @@ from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 class WeatherTool(Tool):
     name = "weather"
     description = "Query current weather for a given city."
-    risk_level = "read"  # 只读操作，无副作用
+    risk_level = "read_only"  # 只读操作，无副作用
     timeout_seconds = 15
     capabilities = ("weather", "location")
     parameters = {
@@ -155,9 +155,9 @@ from echo_agent.agent.tools.weather import WeatherTool
 registry.register(WeatherTool(api_key=config.weather_api_key))
 ```
 
-### 方式 B：通过 capabilities 声明自动发现
+### 方式 B：由受信任插件显式注册
 
-工具的 `capabilities` 元组用于能力匹配。注册系统会根据配置自动加载具备特定能力的工具。
+插件的 `activate(context)` 中调用 `context.register_tool(...)`。`capabilities` 用于策略过滤和审计，本身不会发现、加载或注册工具。
 
 ## ToolResult 规范
 
@@ -187,7 +187,7 @@ class ToolResult:
 
 | 等级 | 含义 | 审批行为 |
 |------|------|---------|
-| `read` | 只读，无副作用 | 通常自动通过 |
+| `read_only` | 只读，无副作用 | 通常自动通过 |
 | `write` | 有副作用（写文件、发消息） | 根据安全策略可能需要审批 |
 | `exec` | 执行外部命令/代码 | 通常需要人工审批 |
 

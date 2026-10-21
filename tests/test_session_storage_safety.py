@@ -102,3 +102,44 @@ async def test_cleanup_expired_persists_status_in_file_mode(tmp_path: Path):
     await mgr.invalidate("chan:old")
     reloaded = await mgr.get_or_create("chan:old")
     assert reloaded.status == "expired"
+
+
+@pytest.mark.asyncio
+async def test_corrupt_file_is_not_loaded_as_an_empty_session(tmp_path: Path):
+    mgr = SessionManager(sessions_dir=tmp_path / "sessions")
+    path = mgr._session_path("chan:corrupt")
+    damaged = '{"role":"user","content":"valuable history"}\n{truncated\n'
+    path.write_text(damaged, encoding="utf-8")
+    with pytest.raises(CorruptData):
+        await mgr.get_or_create("chan:corrupt")
+    assert "chan:corrupt" not in mgr._cache
+    assert path.read_text(encoding="utf-8") == damaged
+
+
+@pytest.mark.asyncio
+async def test_failed_sqlite_save_fallback_is_recovered_over_existing_stale_row(tmp_path: Path, monkeypatch):
+    from echo_agent.storage.sqlite import SQLiteBackend
+
+    storage = SQLiteBackend(tmp_path / "fallback.sqlite")
+    await storage.initialize()
+    try:
+        mgr = SessionManager(sessions_dir=tmp_path / "sessions", storage=storage)
+        session = await mgr.get_or_create("chan:recovery")
+        session.add_message("user", "old")
+        await mgr.save(session)
+        store = storage.store_session
+
+        async def unavailable(*args):
+            raise StorageUnavailable("temporary outage")
+
+        monkeypatch.setattr(storage, "store_session", unavailable)
+        session.add_message("assistant", "must survive restart")
+        await mgr.save(session)
+        monkeypatch.setattr(storage, "store_session", store)
+        restarted = SessionManager(sessions_dir=tmp_path / "sessions", storage=storage)
+        recovered = await restarted.get_or_create(session.key)
+        assert [m["content"] for m in recovered.messages] == ["old", "must survive restart"]
+        assert len((await storage.load_session(session.key))["messages"]) == 2
+        assert not restarted._session_path(session.key).exists()
+    finally:
+        await storage.close()

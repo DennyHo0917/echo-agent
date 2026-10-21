@@ -21,8 +21,10 @@ class EvalReporter:
             "-" * 70,
         ]
         for r in report.results:
-            status = "PASS" if r.passed else "FAIL"
-            lines.append(f"{r.case_id:<20} {status:<6} {r.score:<8.3f} {r.duration_ms:<10.0f} {r.error[:30]}")
+            status = "INCONC" if r.inconclusive else ("PASS" if r.passed else "FAIL")
+            reason = r.error or next((str(m.details.get("reason") or m.details.get("error") or "")
+                                      for m in r.metrics if m.inconclusive), "")
+            lines.append(f"{r.case_id:<20} {status:<6} {r.score:<8.3f} {r.duration_ms:<10.0f} {reason[:80]}")
         lines.append("-" * 70)
         lines.append(f"Total: {report.total_cases} | Passed: {report.passed_cases} | Rate: {report.pass_rate:.1%} | Avg Score: {report.avg_score:.3f}")
         return "\n".join(lines)
@@ -32,11 +34,13 @@ class EvalReporter:
         return {
             "id": result.case_id,
             "passed": result.passed,
+            "inconclusive": result.inconclusive,
             "score": round(result.score, 3),
             "response_preview": result.response[:200],
             "tools_used": result.tools_used,
             "iterations": result.iterations,
             "duration_ms": round(result.duration_ms, 1),
             "error": result.error,
-            "metrics": [{"name": m.name, "score": m.score, "passed": m.passed} for m in result.metrics],
+            "metrics": [{"name": m.name, "score": m.score, "passed": m.passed,
+                         "inconclusive": m.inconclusive, "details": m.details} for m in result.metrics],
         }

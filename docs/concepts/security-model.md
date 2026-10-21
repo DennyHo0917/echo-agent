@@ -148,9 +148,9 @@ credentials:
   require_encryption: true
 ```
 
-- 通道 token（Telegram/Discord/Slack 等）加密存储
-- 密钥从环境变量读取，不落盘
-- `require_encryption: true` 时缺少密钥将拒绝启动
+- CredentialManager 管理的凭据加密存储；YAML 中的模型/通道 token 不会自动迁入该存储，应使用环境变量或限制配置文件为 `0600`。
+- 密钥优先从指定环境变量读取，否则读取或创建权限为 `0600` 的 `.credential_key`。备份和迁移必须保留对应密钥。
+- `require_encryption: true` 时无法获得有效密钥或加密依赖不可用会拒绝初始化，不降级为明文。
 
 ## 9. 记忆写入安全
 

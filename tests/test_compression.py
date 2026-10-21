@@ -610,7 +610,7 @@ class TestConversationCompressor:
         assert result.was_compressed is True
 
     @pytest.mark.asyncio
-    async def test_compress_summary_failure_still_compresses(self):
+    async def test_compress_summary_failure_preserves_history(self):
         c, provider = self._compressor(head_protect_count=1, tail_budget_ratio=0.05)
         provider.chat_with_retry = AsyncMock(side_effect=RuntimeError("fail"))
 
@@ -620,8 +620,10 @@ class TestConversationCompressor:
             + [_msg("user", "final"), _msg("assistant", "end")]
         )
         result = await c.compress(msgs)
-        assert result.was_compressed is True
+        assert result.was_compressed is False
         assert result.summary_text is None
+        assert result.messages == msgs
+        assert result.stats.compression_count == 0
 
     @pytest.mark.asyncio
     async def test_max_compression_warning(self):

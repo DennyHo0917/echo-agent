@@ -29,14 +29,14 @@ When no path is given via `--config`, these filenames are tried in order and the
 
 ## Top-level sections
 
-The configuration tree has 33 sections plus one scalar field, `workspace`. Grouped by purpose:
+The configuration tree has 34 sections plus one scalar field, `workspace`. Grouped by purpose:
 
 | Group | Sections |
 |-------|----------|
 | Models and reasoning | `models`, `agent`, `planning`, `compression` |
 | Tools and execution | `tools`, `execution`, `permissions`, `security` |
 | Channels and gateway | `channels`, `gateway`, `bus`, `a2a` |
-| Memory and knowledge | `memory`, `knowledge`, `session`, `spill` |
+| Memory and knowledge | `memory`, `knowledge`, `session`, `spill`, `artifacts` |
 | Tasks and skills | `scheduler`, `skills`, `evolution`, `multi_agent` |
 | Runtime and operations | `runtime`, `storage`, `checkpoint`, `observability` |
 | Cost and stability | `cost`, `rate_limit`, `circuit_breaker` |
@@ -116,7 +116,7 @@ There are two correct approaches. First, keep credentials out of the file entire
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-Second, override the option through an environment variable (scalar fields only; list types are not supported):
+Second, override the option through an environment variable (scalar fields are validated by the schema; lists and dictionaries accept JSON):
 
 ```bash
 export ECHO_AGENT_MODELS__DEFAULT_MODEL=claude-sonnet-4-5
@@ -142,7 +142,7 @@ The `config` subcommand has four actions:
 | Command | Purpose |
 |---------|---------|
 | `echo-agent config validate` | Validate the configuration |
-| `echo-agent config dump` | Print the merged, effective configuration (credentials redacted); accepts `--format json` |
+| `echo-agent config dump` | Print merged file/environment configuration (not the resident Runtime) (credentials redacted); accepts `--format json` |
 | `echo-agent config explain <key>` | Explain one option, addressed by dotted path |
 | `echo-agent config gen-docs` | Regenerate the configuration reference page |
 

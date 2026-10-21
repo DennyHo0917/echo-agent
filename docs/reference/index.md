@@ -10,7 +10,7 @@
 | [TUI 命令](tui-commands.md) | 交互式终端 UI 中的斜杠命令 |
 | [配置指南](configuration-guide.md) | YAML 配置字段、加载顺序、Profile 系统 |
 | [环境变量](environment-variables.md) | ECHO_AGENT_ 前缀变量与覆盖规则 |
-| [内置工具](tools.md) | 30 个内置工具的用途、参数与风险等级 |
+| [内置工具](tools.md) | 内置工具的用途、参数与风险等级 |
 | [安全配置矩阵](security-profile-matrix.md) | 安全级别与工具配置的组合矩阵 |
 | [Gateway API](gateway-api.md) | HTTP REST 端点、认证、请求/响应格式 |
 | [WebSocket 协议](websocket-protocol.md) | 实时通信帧格式与事件类型 |

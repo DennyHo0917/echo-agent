@@ -25,7 +25,7 @@ pip install -e ".[all,dev]"
 Make sure lint and tests pass before opening a PR — CI runs the same checks on every PR:
 
 ```bash
-ruff check .
+ruff check . --extend-exclude client
 pytest
 ```
 

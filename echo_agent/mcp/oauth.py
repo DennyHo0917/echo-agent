@@ -277,6 +277,15 @@ class MCPOAuthClient:
     # ── authorization code + PKCE ───────────────────────────────────────────
 
     async def _authorize(self) -> dict[str, Any]:
+        import sys
+
+        if not sys.stdin.isatty():
+            raise MCPOAuthError(
+                f"MCP OAuth server '{self._server_name}' needs authorization for {self._server_url}, "
+                "but this process has no interactive terminal. Stop the background service and "
+                "authorize it from a foreground terminal using the same workspace, then restart. "
+                "Existing credential files are preserved."
+            )
         issuer, metadata = await self._resolve_auth_server()
         auth_endpoint = self._endpoint_from(metadata, "authorization_endpoint", issuer, "/authorize")
         token_endpoint = self._endpoint_from(metadata, "token_endpoint", issuer, "/token")
@@ -738,10 +747,23 @@ class MCPOAuthClient:
             return None
 
     def _load_token(self) -> dict[str, Any] | None:
-        return self._read_json(self._token_file)
+        data = self._read_json(self._token_file)
+        if data is None:
+            return None
+        # A server name is only a local alias. Repointing it must not forward
+        # a token issued for the previous resource, even on the same origin.
+        # Legacy files carry no provable resource binding: preserve them for
+        # recovery, but require reauthorization before using their credentials.
+        if data.get("server_url") != self._server_url:
+            logger.warning(
+                "Cached OAuth token for '{}' is unbound or belongs to a different MCP resource; reauthorization required",
+                self._server_name,
+            )
+            return None
+        return data
 
     def _save_token(self, data: dict[str, Any]) -> None:
-        self._write_secret_json(self._token_file, data)
+        self._write_secret_json(self._token_file, {**data, "server_url": self._server_url})
 
     def _write_secret_json(self, path: Path, data: dict[str, Any]) -> None:
         """Write JSON to *path* atomically, readable only by this user.

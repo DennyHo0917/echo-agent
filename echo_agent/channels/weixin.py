@@ -628,28 +628,25 @@ class WeixinChannel(BaseChannel):
         if not has_media:
             return await self._send_text(chat_id, event.text or "", event=event)
 
-        all_ok = True
-        last_error = ""
-        for index, block in enumerate(blocks):
+        parts = []
+        for block in blocks:
             if block.type == ContentType.TEXT:
-                if block.text:
-                    res = await self._send_text(chat_id, block.text, event=OutboundEvent.text_reply(
-                        self.name, chat_id, block.text, event_id=f"{event.event_id}:block:{index}",
-                    ))
-                    if not res.success:
-                        all_ok, last_error = False, res.error
-            elif block.type == ContentType.AUDIO and block.url:
-                res = await self.send_voice(chat_id, block.url)
-                if not res.success:
-                    all_ok, last_error = False, res.error
-            elif block.url and block.type in (
+                parts.extend(json.dumps(["text", chunk, ""], ensure_ascii=False) for chunk in self._split_text(block.text or ""))
+            elif block.url:
+                parts.append(json.dumps([block.type.value, "", block.url], ensure_ascii=False))
+        async def send_part(index, part):
+            block_type, text, source = json.loads(part)
+            block_type = ContentType(block_type)
+            if block_type == ContentType.TEXT:
+                return await self._send_text_chunk(chat_id, text)
+            if block_type == ContentType.AUDIO and source:
+                return await self.send_voice(chat_id, source)
+            if source and block_type in (
                 ContentType.IMAGE, ContentType.FILE, ContentType.VIDEO,
             ):
-                as_image = block.type == ContentType.IMAGE
-                res = await self.send_file(chat_id, block.url, as_image=as_image)
-                if not res.success:
-                    all_ok, last_error = False, res.error
-        return SendResult(success=all_ok, error="" if all_ok else last_error)
+                return await self.send_file(chat_id, source, as_image=block_type == ContentType.IMAGE)
+            return SendResult(success=False, error="unsupported Weixin content block")
+        return await self.send_parts(event, parts, send_part, namespace="blocks", force_checkpoint=True)
 
     async def _send_text(self, chat_id: str, text: str, *, event: OutboundEvent | None = None) -> SendResult:
         if not text:
@@ -659,32 +656,37 @@ class WeixinChannel(BaseChannel):
         context_token = self._token_store.get(self._account_id, chat_id)
         chunks = self._split_text(text)
         async def send_part(index, chunk):
-            try:
-                resp = await _send_message(
-                    self._send_session,
-                    base_url=self._base_url,
-                    token=self._token,
-                    to=chat_id,
-                    text=chunk,
-                    context_token=context_token,
-                )
-                failure = _require_ok(resp, what="sendmessage")
-                if not isinstance(resp, dict) or not any(key in resp for key in ("ret", "errcode")):
-                    return SendResult(success=False, error=failure or "Weixin acknowledgement missing", delivery_unknown=True)
-                if failure:
-                    logger.warning("weixin send error: {}", failure)
-                    return SendResult(success=False, error=failure)
-            except Exception as exc:
-                error = self.safe_delivery_error(exc)
-                logger.error("weixin send failed to {}: {}", chat_id[:8] if chat_id else "?", error)
-                return SendResult(success=False, error=error, delivery_unknown=True)
-            return SendResult(success=True)
+            return await self._send_text_chunk(chat_id, chunk, context_token=context_token)
 
         async def before_send(index, chunk):
             if index > 0:
                 await asyncio.sleep(0.3)
         event = event or OutboundEvent.text_reply(self.name, chat_id, text)
         return await self.send_parts(event, chunks, send_part, before_send=before_send)
+
+    async def _send_text_chunk(self, chat_id: str, chunk: str, *, context_token: str | None = None) -> SendResult:
+        if context_token is None:
+            context_token = self._token_store.get(self._account_id, chat_id)
+        try:
+            resp = await _send_message(
+                self._send_session,
+                base_url=self._base_url,
+                token=self._token,
+                to=chat_id,
+                text=chunk,
+                context_token=context_token,
+            )
+            failure = _require_ok(resp, what="sendmessage")
+            if not isinstance(resp, dict) or not any(key in resp for key in ("ret", "errcode")):
+                return SendResult(success=False, error=failure or "Weixin acknowledgement missing", delivery_unknown=True)
+            if failure:
+                logger.warning("weixin send error: {}", failure)
+                return SendResult(success=False, error=failure)
+        except Exception as exc:
+            error = self.safe_delivery_error(exc)
+            logger.error("weixin send failed to {}: {}", chat_id[:8] if chat_id else "?", error)
+            return SendResult(success=False, error=error, delivery_unknown=True)
+        return SendResult(success=True)
 
     @staticmethod
     def _split_text(text: str) -> list[str]:
@@ -943,15 +945,20 @@ class WeixinChannel(BaseChannel):
         }
         if context_token:
             msg["context_token"] = context_token
-        resp = await _api_post(
-            self._send_session,
-            base_url=self._base_url,
-            endpoint=_EP_SEND_MESSAGE,
-            payload={"msg": msg},
-            token=self._token,
-            timeout_ms=_API_TIMEOUT_MS,
-        )
+        try:
+            resp = await _api_post(
+                self._send_session,
+                base_url=self._base_url,
+                endpoint=_EP_SEND_MESSAGE,
+                payload={"msg": msg},
+                token=self._token,
+                timeout_ms=_API_TIMEOUT_MS,
+            )
+        except Exception as exc:
+            return SendResult(success=False, error=self.safe_delivery_error(exc), delivery_unknown=True)
         failure = _require_ok(resp, what="sendmessage")
+        if not isinstance(resp, dict) or not any(key in resp for key in ("ret", "errcode")):
+            return SendResult(success=False, error=failure or "Weixin acknowledgement missing", delivery_unknown=True)
         if failure:
             logger.warning("weixin media send error: {}", failure)
             return SendResult(success=False, error=f"sendmessage {failure}")
@@ -975,6 +982,8 @@ class WeixinChannel(BaseChannel):
                 logger.warning("weixin voice >60s ({}ms), sending as file attachment", duration_ms)
                 return await self._send_file(chat_id, path, as_image=False)
             res = await self._send_file(chat_id, silk_path, as_voice=True, voice_ms=duration_ms)
+            if res.delivery_unknown:
+                return res  # A voice may already exist; never send a fallback copy.
             if not res.success:
                 logger.warning("weixin native voice failed ({}), falling back to file", res.error)
                 return await self._send_file(chat_id, path, as_image=False)
@@ -1055,7 +1064,10 @@ class WeixinChannel(BaseChannel):
                 # This closes the crash-loss window where sync_buf advances past
                 # messages that were never processed.
                 if batch_tasks:
-                    await asyncio.gather(*batch_tasks, return_exceptions=True)
+                    outcomes = await asyncio.gather(*batch_tasks, return_exceptions=True)
+                    if any(outcome is False or isinstance(outcome, BaseException) for outcome in outcomes):
+                        await asyncio.sleep(_RETRY_DELAY)
+                        continue
 
                 if new_sync_buf:
                     sync_buf = new_sync_buf
@@ -1082,28 +1094,31 @@ class WeixinChannel(BaseChannel):
 
     # ── Message processing ───────────────────────────────────────────────────
 
-    async def _process_message_safe(self, message: dict[str, Any]) -> None:
+    async def _process_message_safe(self, message: dict[str, Any]) -> bool:
         try:
-            await self._process_message(message)
+            return await self._process_message(message)
         except Exception as exc:
             logger.error("weixin: unhandled inbound error: {}", exc, exc_info=True)
+            message_id = str(message.get("message_id") or "").strip()
+            self._dedup._seen.pop(message_id, None)
+            return False
 
-    async def _process_message(self, message: dict[str, Any]) -> None:
+    async def _process_message(self, message: dict[str, Any]) -> bool:
         sender_id = str(message.get("from_user_id") or "").strip()
         if not sender_id or sender_id == self._account_id:
-            return
+            return True
 
         message_id = str(message.get("message_id") or "").strip()
         if message_id and self._dedup.is_duplicate(message_id):
-            return
+            return True
 
         chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)
         if chat_type == "group":
-            return
+            return True
         if self._dm_policy == "disabled":
-            return
-        if self._dm_policy == "allowlist" and not self.is_allowed(sender_id):
-            return
+            return True
+        if not self.is_allowed(sender_id):
+            return True
 
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
@@ -1130,11 +1145,11 @@ class WeixinChannel(BaseChannel):
             text = f"{text}\n{notice}".strip() if text else notice
 
         if not text and not media:
-            return
+            return True
 
         # Typing indicator is driven by ChannelManager (send_typing on inbound +
         # every heartbeat beat, stop_typing on the final reply), not started here.
-        await self._handle_message(
+        inbound = await self._handle_message(
             sender_id=sender_id,
             chat_id=effective_chat_id,
             text=text,
@@ -1142,7 +1157,11 @@ class WeixinChannel(BaseChannel):
             reply_to_text=reply_to_text,
             reply_to_sender=reply_to_sender,
             metadata={"message_id": message_id, "chat_type": chat_type},
+            event_id=self._native_event_id(effective_chat_id, message_id),
         )
+        if inbound is None and message_id:
+            self._dedup._seen.pop(message_id, None)
+        return inbound is not None
 
     def _resolve_media_url(self, url: str) -> str:
         """Normalize a media URL, joining relative paths against the CDN base."""

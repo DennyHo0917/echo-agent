@@ -15,6 +15,7 @@
 ```yaml
 channels:
   wecom:
+    enabled: true
     corp_id: "ww1234567890abcdef"
     agent_id: "1000002"
     secret: "your-app-secret-here"
@@ -74,12 +75,12 @@ GET /wecom?msg_signature=xxx&timestamp=xxx&nonce=xxx&echostr=xxx
 验证步骤：
 
 1. 取出 `msg_signature`、`timestamp`、`nonce`、`echostr` 参数
-2. 用 `token`、`timestamp`、`nonce`、解密后的 `echostr` 计算 SHA1 签名
+2. 用 `token`、`timestamp`、`nonce`、收到的密文 `echostr` 计算 SHA1 签名
 3. 比对签名是否与 `msg_signature` 一致
 4. 验证通过后，返回解密后的 `echostr` 明文
 
 ```text
-SHA1(sort(token, timestamp, nonce, echostr_decrypt)) == msg_signature
+SHA1(sort(token, timestamp, nonce, echostr_ciphertext)) == msg_signature
 ```
 
 ### 消息接收流程
@@ -164,4 +165,4 @@ signature = SHA1(sort([token, timestamp, nonce, encrypt_msg]))
     3. 注意 IP 白名单设置（如已配置）
 
 !!! question "Q: 如何确认消息来自企业微信？"
-    通过 `msg_signature` 签名验证。签名基于 Token + Timestamp + Nonce + EncryptedContent 的 SHA1 值，无法伪造。
+    通过 `msg_signature` 签名验证。签名基于 Token + Timestamp + Nonce + EncryptedContent；验证依赖回调 Token 保密。

@@ -51,7 +51,7 @@ stateDiagram-v2
 
 ## 配置
 
-Gateway 运行时自动启用 A2A。通过 `a2a` 配置节进行配置。
+Gateway 与 Agent 可用且 `a2a.enabled: true` 时才注册入站 A2A 路由；仅启动 Gateway 不会忽略该开关。
 
 ## 身份与任务隔离
 

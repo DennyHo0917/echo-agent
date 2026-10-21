@@ -222,11 +222,12 @@ class WorkerExecutor:
                 temperature=temperature,
             )
 
-            if response.finish_reason == "error":
+            if response.finish_reason in {"error", "length", "content_filter"}:
                 return {
                     "success": False,
                     "output": response.content or "",
-                    "error": response.content or "LLM error",
+                    "error": ((response.content or "LLM error") if response.finish_reason == "error"
+                              else f"Worker model did not complete (finish_reason={response.finish_reason})"),
                     "iterations": state["iterations"],
                     "tool_calls": state["tool_calls"],
                 }
@@ -246,6 +247,7 @@ class WorkerExecutor:
                 "role": "assistant",
                 "content": response.content,
                 "tool_calls": [tc.to_openai_format() for tc in response.tool_calls],
+                **({"provider_content": response.provider_content} if getattr(response, "provider_content", None) else {}),
             })
 
             for idx, tc in enumerate(response.tool_calls):

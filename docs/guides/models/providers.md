@@ -7,8 +7,8 @@ Echo Agent 支持多种 LLM Provider，通过统一的 YAML 配置格式接入�
 | Provider | 认证方式 | 流式输出 | 凭证池 | 自定义端点 | 备注 |
 |----------|----------|----------|--------|------------|------|
 | openai | API Key | ✅ | ✅ | ✅ | 同时兼容 OpenAI 协议的第三方服务 |
-| anthropic | API Key | ✅ | ✅ | ❌ | Claude 系列模型 |
-| gemini | API Key | ✅ | ✅ | ❌ | Google Gemini 系列 |
+| anthropic | API Key | ✅ | ✅ | ✅ | Claude 系列模型 |
+| gemini | API Key | ✅ | ✅ | ✅ | Google Gemini 系列 |
 | bedrock | AWS 凭证 | ✅ | ❌ | ❌ | 通过 AWS 区域端点访问 |
 | openrouter | API Key | ✅ | ✅ | ✅ | 聚合路由，支持多家模型 |
 

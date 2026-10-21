@@ -218,11 +218,14 @@ class TrajectoryRecorder:
             output = str(getattr(result, "text", "") or getattr(result, "output", "") or "")
             tc = ToolCall(
                 name=str(name or ""),
-                args_digest=digest(args) if self._redact else (str(args)[:500]),
-                result_digest=digest(output) if self._redact else output[:500],
+                # A preview plus a hash is still plaintext disclosure. When
+                # redaction is enabled retain only correlation hashes, including
+                # error bodies (which can echo credentials or request headers).
+                args_digest=digest(args, max_chars=0) if self._redact else (str(args)[:500]),
+                result_digest=digest(output, max_chars=0) if self._redact else output[:500],
                 duration_ms=0.0,
                 success=success,
-                error=error[:300],
+                error=(digest(error, max_chars=0) if self._redact and error else error[:300]),
             )
             async with self._lock:
                 live = self._active.get(session_key)
@@ -232,14 +235,16 @@ class TrajectoryRecorder:
             logger.debug("Recorder post_tool_call failed: {}", e)
         return None
 
-    async def _on_post_llm_call(self, response: Any, *_args: Any, **_kwargs: Any):
+    async def _on_post_llm_call(self, response: Any, *_args: Any, session_key: str = "", **_kwargs: Any):
         try:
-            # No ctx is provided to post_llm_call by InferenceStage today, so we
-            # bump iteration counters for every active turn. Tool-call success
-            # remains accurately attributed via post_tool_call's ctx.session_key.
             content = str(getattr(response, "content", "") or "")
             async with self._lock:
-                for partial in self._active.values():
+                # Older direct hook producers may omit the key. Only an
+                # unambiguous single active turn can safely accept that event.
+                if not session_key and len(self._active) == 1:
+                    session_key = next(iter(self._active))
+                partial = self._active.get(session_key)
+                if partial is not None:
                     partial.iterations += 1
                     if content:
                         partial.last_response_content = content[: self._max_response_chars]

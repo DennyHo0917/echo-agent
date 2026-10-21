@@ -110,6 +110,7 @@ plugins:
             可观测性: Observability
             性能: Performance
             故障排查: Troubleshooting
+            服务端评审与验证: Server Review and Verification
             参考手册: Reference
             CLI 参考: CLI Reference
             TUI 命令: TUI Commands
@@ -235,6 +236,7 @@ nav:
       - 可观测性: operations/observability.md
       - 性能: operations/performance.md
       - 故障排查: operations/troubleshooting.md
+      - 服务端评审与验证: reviews/server-review-and-remediation.md
   - 参考手册:
       - reference/index.md
       - CLI 参考: reference/cli.md

@@ -16,9 +16,9 @@ The four tiers are cumulative — each one contains every tool from the tier bef
 
 | Profile | Tools | Intended use |
 |---------|-------|--------------|
-| `minimal` | 14 | Read-only Q&A; no file writes, no media generation |
-| `messaging` | 18 | Adds memory and media generation on top of `minimal` |
-| `coding` | 24 | Adds file writes and orchestration on top of `messaging` |
+| `minimal` | 19 | Read-only Q&A; no file writes, no media generation |
+| `messaging` | 23 | Adds memory and media generation on top of `minimal` |
+| `coding` | 29 | Adds file writes and orchestration on top of `messaging` |
 | `full` | all | Allowlist is `*`, permitting every tool (default) |
 
 For the exact tool list per tier, see the profile table in the [built-in tool reference](tools.md).
@@ -32,20 +32,20 @@ The `full` allowlist is the literal `*`, so newly added tools become available t
 | Profile | Meaning | Additional denials |
 |---------|---------|--------------------|
 | `personal_cli` | Single user on their own machine (default) | none |
-| `daemon` | Long-running background service | 4 tools + 4 capabilities |
-| `public_gateway` | Gateway exposed beyond localhost | 11 tools + 8 capabilities |
+| `daemon` | Long-running background service | 5 tools + 5 capabilities |
+| `public_gateway` | Gateway exposed beyond localhost | 12 tools + 9 capabilities |
 
 ### daemon
 
-Denied tools: `exec`, `execute_code`, `process`, `skill_install`
+Denied tools: `exec`, `execute_code`, `process`, `skill_install`, `skill_run`
 
-Denied capabilities: `code.exec`, `process.exec`, `process.manage`, `skill.install`
+Denied capabilities: `code.exec`, `mcp.call`, `process.exec`, `process.manage`, `skill.install`
 
 ### public_gateway
 
-Denied tools are the 6 members of `HIGH_RISK_TOOLS` (`cronjob`, `exec`, `execute_code`, `process`, `skill_install`, `skill_manage`) plus 5 write-capable tools (`edit_file`, `knowledge_index`, `patch`, `workflow`, `write_file`), 11 in total.
+Denied tools: `cronjob`, `edit_file`, `exec`, `execute_code`, `knowledge_index`, `patch`, `process`, `skill_install`, `skill_manage`, `skill_run`, `workflow`, `write_file`
 
-Denied capabilities: `code.exec`, `fs.write`, `process.exec`, `process.manage`, `scheduler.write`, `skill.install`, `skill.write`, `workflow.write`
+Denied capabilities: `code.exec`, `fs.write`, `mcp.call`, `process.exec`, `process.manage`, `scheduler.write`, `skill.install`, `skill.write`, `workflow.write`
 
 !!! danger "Before exposing the gateway"
     Setting `security.profile: public_gateway` is not sufficient on its own. Confirm that authentication is enabled and that the listen address and allowed origins are restricted. The gateway listens on `127.0.0.1` by default; listening beyond localhost is a change you must make deliberately. See [security hardening](../operations/security-hardening.md).
@@ -133,5 +133,5 @@ tools:
 
 ## Related pages
 
-- [Built-in tool reference](tools.md) — parameters and capability tags for all 36 tools
+- [Built-in tool reference](tools.md) — tool parameters and capability tags
 - [Configuration reference](configuration.md) — per-option reference generated from the schema

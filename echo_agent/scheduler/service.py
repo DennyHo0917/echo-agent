@@ -12,7 +12,8 @@ import os
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -22,6 +23,7 @@ from loguru import logger
 
 from echo_agent.scheduler.authorization import JobAuthorization
 from echo_agent.scheduler.authorization import verify as verify_authorization
+from echo_agent.storage.errors import CorruptData, StorageUnavailable
 
 try:
     import fcntl
@@ -79,6 +81,10 @@ class ScheduledJob:
     last_status: str = ""
     last_error: str = ""
     run_count: int = 0
+    active_run_id: str = ""
+    # Set only on the immutable dispatch snapshot passed to on_job. It is not
+    # job configuration and must never be supplied through payload metadata.
+    run_id: str = ""
     # Bounded, persisted execution ledger. Kept on the job so scheduler.json
     # remains the single atomic state file and existing workspaces need no
     # separate migration. Old jobs simply deserialize with an empty history.
@@ -108,6 +114,7 @@ class ScheduledJob:
             "last_status": self.last_status,
             "last_error": self.last_error,
             "run_count": self.run_count,
+            "active_run_id": self.active_run_id,
             "run_history": self.run_history[-100:],
             "created_at_ms": self.created_at_ms,
             "authorization": self.authorization.to_dict() if self.authorization else None,
@@ -133,6 +140,7 @@ class ScheduledJob:
             last_status=data.get("last_status", ""),
             last_error=data.get("last_error", ""),
             run_count=data.get("run_count", 0),
+            active_run_id=data.get("active_run_id", ""),
             run_history=(data.get("run_history") or [])[-100:],
             created_at_ms=data.get("created_at_ms", 0),
             authorization=JobAuthorization.from_dict(data.get("authorization")),
@@ -306,13 +314,28 @@ class Scheduler:
             return
         try:
             data = json.loads(self._store_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or not isinstance(data.get("jobs", []), list):
+                raise ValueError("scheduler state must contain a jobs array")
+            jobs = {}
             for item in data.get("jobs", []):
+                if not isinstance(item, dict):
+                    raise ValueError("scheduler jobs must be objects")
                 job = ScheduledJob.from_dict(item)
-                self._jobs[job.id] = job
+                if not isinstance(job.id, str) or not job.id or job.id in jobs:
+                    raise ValueError("scheduler job IDs must be nonempty and unique")
+                if not isinstance(job.run_history, list) or any(not isinstance(run, dict) for run in job.run_history):
+                    raise ValueError("scheduler run_history must be an array of objects")
+                jobs[job.id] = job
+            # Publish only a fully decoded store; a malformed later row must
+            # not turn the next save into destructive partial recovery.
+            self._jobs = jobs
+            for job in jobs.values():
                 if job.trigger == TriggerKind.EVENT and job.event_name:
                     self._event_handlers.setdefault(job.event_name, []).append(job.id)
-        except Exception as e:
-            logger.warning("Failed to load scheduler state: {}", e)
+        except OSError as e:
+            raise StorageUnavailable(f"Cannot read scheduler state {self._store_path}: {e}") from e
+        except (ValueError, TypeError, AttributeError, KeyError) as e:
+            raise CorruptData(f"Invalid scheduler state {self._store_path}; restore or repair it before startup: {e}") from e
 
     def save_state(self) -> None:
         """Persist current job state to disk."""
@@ -392,10 +415,23 @@ class Scheduler:
             raise
 
     async def start(self) -> None:
+        if self._running:
+            return
         self._running = True
         self._concurrency_sem = asyncio.Semaphore(self._max_concurrent)
         now = _now_ms()
         for job in self._jobs.values():
+            # Enqueued work is in-memory bus state, not a durable executable
+            # queue. After a process restart its side effects are unknown: mark
+            # that occurrence interrupted and never silently replay it.
+            for run in job.run_history:
+                if run.get("status") in {"queued", "dispatching", "running"}:
+                    run.update(status="interrupted", error="Runtime restarted before run completion; inspect side effects before retrying",
+                               completed_ts=now)
+            if job.run_history and job.run_history[-1].get("status") == "interrupted":
+                job.last_status = "interrupted"
+                job.last_error = job.run_history[-1]["error"]
+            job.active_run_id = ""
             if not (job.enabled and job.status == JobStatus.ACTIVE):
                 continue
             if job.trigger == TriggerKind.ONCE and job.at_ms and job.at_ms <= now:
@@ -587,7 +623,7 @@ class Scheduler:
             ]
         return []
 
-    async def record_run_outcome(self, job_id: str, status: str, error: str = "") -> None:
+    async def record_run_outcome(self, job_id: str, status: str, error: str = "", *, run_id: str = "") -> None:
         """Write back the real end-to-end outcome of a dispatched job run.
 
         _run_job only knows the event was *queued* onto the bus; the agent turn
@@ -599,14 +635,22 @@ class Scheduler:
         job = self._jobs.get(job_id)
         if job is None:
             return
-        job.last_status = status
-        job.last_error = error
-        if job.run_history:
-            latest = job.run_history[-1]
-            if latest.get("run_count") == job.run_count:
-                latest["status"] = status
-                latest["error"] = error
-                latest["completed_ts"] = _now_ms()
+        if status not in {"completed", "incomplete", "error", "interrupted"}:
+            raise ValueError(f"Invalid scheduled run outcome: {status}")
+        # A job ID is not an execution identity. Compatibility writeback is
+        # allowed only for an unambiguous pre-run-ID ledger entry.
+        candidates = [run for run in job.run_history
+                      if (run.get("run_id") == run_id if run_id else not run.get("run_id"))
+                      and run.get("status") in {"queued", "dispatching", "running"}]
+        if len(candidates) != 1:
+            return
+        run = candidates[0]
+        run.update(status=status, error=error, completed_ts=_now_ms())
+        if run is job.run_history[-1]:
+            job.last_status = status
+            job.last_error = error
+        if run_id and job.active_run_id == run_id:
+            job.active_run_id = ""
         await self._save_async()
         # The terminal outcome, not just the dispatch: this is the one the cron
         # page's "last result" column actually cares about.
@@ -616,8 +660,7 @@ class Scheduler:
         job = self._jobs.get(job_id)
         if not job or not job.enabled or job.status in (JobStatus.CANCELLED, JobStatus.COMPLETED):
             return False
-        await self._execute_job(job)
-        return True
+        return await self._execute_job(job)
 
     async def _tick_loop(self) -> None:
         while self._running:
@@ -628,7 +671,7 @@ class Scheduler:
                         continue
                     if not job.next_run_ms or now < job.next_run_ms:
                         continue
-                    if job.id in self._inflight_jobs:
+                    if job.id in self._inflight_jobs or job.active_run_id:
                         # Previous run still executing — skip this tick rather
                         # than queue a duplicate, otherwise a slow job whose
                         # interval is shorter than its runtime would pile up.
@@ -657,20 +700,43 @@ class Scheduler:
         finally:
             self._inflight_jobs.discard(job.id)
 
-    async def _execute_job(self, job: ScheduledJob) -> None:
+    async def _execute_job(self, job: ScheduledJob) -> bool:
+        if job.active_run_id:
+            return False
+        # The enqueue handler returns before AgentLoop finishes. Count durable
+        # active runs as well as the short dispatch semaphore, or a batch of
+        # distinct slow jobs silently exceeds max_concurrent after publication.
+        if sum(bool(candidate.active_run_id) for candidate in self._jobs.values()) >= self._max_concurrent:
+            return False
         lock_fd = self._try_acquire_lock(job.id)
         if lock_fd is None:
             logger.debug("Job {} locked by another instance, skipping", job.id)
-            return
+            return False
         try:
-            await self._run_job(job)
+            return await self._run_job(job)
         finally:
             self._release_lock(lock_fd)
 
-    async def _run_job(self, job: ScheduledJob) -> None:
+    async def _run_job(self, job: ScheduledJob) -> bool:
+        if job.active_run_id:
+            return False
+        run_id = uuid.uuid4().hex
+        job.active_run_id = run_id
         job.last_run_ms = _now_ms()
         job.run_count += 1
+        job.last_status = "dispatching"
+        job.last_error = ""
+        run = {"run_id": run_id, "ts": job.last_run_ms, "status": "dispatching", "error": "",
+               "run_count": job.run_count, "completed_ts": None}
+        job.run_history.append(run)
+        if len(job.run_history) > 100:
+            del job.run_history[:-100]
+        published = False
         try:
+            snapshot = replace(job, payload=deepcopy(job.payload), run_history=[], run_id=run_id)
+            # Persistence is part of dispatch, including its error/cancel path.
+            # No callback can run before its execution identity is durable.
+            await self._save_async()
             if self._on_job:
                 # The handler returns what actually happened. For bus-dispatched
                 # jobs this is "queued" — the event was accepted into the bus but
@@ -678,40 +744,53 @@ class Scheduler:
                 # Recording "success" here would be a false signal: it would only
                 # ever mean "enqueued", masking downstream execution/delivery
                 # failures. Honour the handler's own status instead.
-                status = await self._on_job(job)
-                job.last_status = status or "queued"
-                job.last_error = ""
+                published = True
+                status = await self._on_job(snapshot)
+                if run["status"] == "dispatching":
+                    run["status"] = status or "queued"
             else:
-                job.last_status = "skipped"
+                run["status"] = "skipped"
+        except asyncio.CancelledError:
+            if run["status"] == "dispatching":
+                run.update(status="interrupted", error=(
+                    "Dispatch interrupted; inspect side effects before retrying" if published
+                    else "Dispatch interrupted before publication; no work was submitted"
+                ))
+            raise
         except Exception as e:
-            job.last_status = "error"
-            job.last_error = str(e)
+            if run["status"] == "dispatching":
+                run.update(status="error", error=str(e))
             logger.error("Job {} failed: {}", job.id, e)
-
-        job.run_history.append(
-            {
-                "ts": job.last_run_ms,
-                "status": job.last_status or "unknown",
-                "error": job.last_error,
-                "run_count": job.run_count,
-                # queued is intentionally non-terminal; record_run_outcome fills this
-                # when the agent turn and delivery actually finish.
-                "completed_ts": None if job.last_status == "queued" else _now_ms(),
-            }
-        )
-        if len(job.run_history) > 100:
-            del job.run_history[:-100]
-
-        if job.delete_after_run or job.trigger == TriggerKind.ONCE:
-            job.status = JobStatus.COMPLETED
-        else:
-            job.next_run_ms = _compute_next_run(job, _now_ms())
-            if job.next_run_ms is None:
-                job.status = JobStatus.COMPLETED
-                logger.warning("Job {} ('{}') has no computable next run; marking completed", job.id, job.name)
-
-        await self._save_async()
-        await self._emit("cron_run", job)
+        finally:
+            if run["status"] not in {"queued", "dispatching", "running"}:
+                run["completed_ts"] = run["completed_ts"] or _now_ms()
+                if job.active_run_id == run_id:
+                    job.active_run_id = ""
+            job.last_status = run["status"]
+            job.last_error = run["error"]
+            if published or run["status"] == "skipped":
+                # Once a handler may have submitted work, never replay a
+                # one-shot automatically, even when dispatch was cancelled.
+                if job.delete_after_run or job.trigger == TriggerKind.ONCE:
+                    job.status = JobStatus.COMPLETED
+                else:
+                    job.next_run_ms = _compute_next_run(job, _now_ms())
+                    if job.next_run_ms is None:
+                        job.status = JobStatus.COMPLETED
+            elif run["status"] in {"error", "interrupted"}:
+                # No callback ran: keep an unfired one-shot retryable and back
+                # off persistence failures instead of retrying every tick.
+                job.next_run_ms = (_now_ms() + 5000 if job.trigger == TriggerKind.ONCE
+                                   else _compute_next_run(job, _now_ms()))
+            # Clear the in-memory slot even if persistence is still unavailable.
+            # A dispatch error must retain its original diagnostic, rather than
+            # be replaced by a second failure while writing the outcome.
+            try:
+                await self._save_async()
+            except OSError as error:
+                logger.error("Could not persist outcome for job {}: {}", job.id, error)
+            await self._emit("cron_run", job)
+        return run["status"] not in {"error", "interrupted", "skipped"}
 
     def _warn_unauthorized_jobs(self) -> None:
         """Name the jobs whose privileged work will be refused at fire time.

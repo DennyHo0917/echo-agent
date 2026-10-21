@@ -217,7 +217,7 @@ async def test_incomplete_turn_still_recorded_when_delivery_ok():
 
     await loop._on_inbound(_cron_event())
 
-    assert cron_calls[-1][0] == "completed"
+    assert cron_calls[-1][0] == "incomplete"
     assert task_calls[-1][0] == "incomplete"
     assert loop.bus.sent[-1].metadata["_turn_status"] == "incomplete"
     # The turn answered, it just did not finish the task. `_error` drives
@@ -243,7 +243,7 @@ async def test_interrupted_turn_final_frame_matches_terminal_status():
 
     await loop._on_inbound(_cron_event())
 
-    assert cron_calls[-1][0] == "completed"
+    assert cron_calls[-1][0] == "interrupted"
     assert task_calls[-1][0] == "incomplete"
     assert loop.bus.sent[-1].metadata["_turn_status"] == "interrupted"
     # "stopped" reached the user, so this is not an error frame — see the

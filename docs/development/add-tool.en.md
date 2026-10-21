@@ -63,7 +63,7 @@ from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 class WeatherTool(Tool):
     name = "weather"
     description = "Query current weather for a given city."
-    risk_level = "read"  # Read-only, no side effects
+    risk_level = "read_only"  # Read-only, no side effects
     timeout_seconds = 15
     capabilities = ("weather", "location")
     parameters = {
@@ -157,9 +157,9 @@ from echo_agent.agent.tools.weather import WeatherTool
 registry.register(WeatherTool(api_key=config.weather_api_key))
 ```
 
-### Option B: Auto-discovery via capabilities declaration
+### Option B: Explicit registration by a trusted plugin
 
-The `capabilities` tuple is used for capability matching. The registration system can automatically load tools with specific capabilities based on configuration.
+Call `context.register_tool(...)` inside plugin `activate(context)`. Capabilities drive policy and audit; declaring them does not discover, load or register a tool.
 
 ## ToolResult Specification
 
@@ -189,7 +189,7 @@ Only `timeout`/`dependency`/`internal` are infrastructure failures that trigger 
 
 | Level | Meaning | Approval Behavior |
 |-------|---------|-------------------|
-| `read` | Read-only, no side effects | Usually auto-approved |
+| `read_only` | Read-only, no side effects | Usually auto-approved |
 | `write` | Has side effects (write files, send messages) | May require approval per security policy |
 | `exec` | Executes external commands/code | Usually requires human approval |
 

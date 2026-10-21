@@ -54,7 +54,7 @@ Available extras:
 
 ```bash
 # Lint check
-ruff check .
+ruff check . --extend-exclude client
 
 # Run tests
 python -m pytest tests/ -v --cov

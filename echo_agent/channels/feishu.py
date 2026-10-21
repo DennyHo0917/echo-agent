@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import time
+import hashlib
+import hmac
 from base64 import b64decode
 from typing import Any
 
@@ -58,6 +60,8 @@ class FeishuChannel(BaseChannel):
         self._seen_ids: set[str] = set()
 
     async def start(self) -> None:
+        if not self._verification_token and not self._encryption_key:
+            raise ValueError("Feishu requires verification_token or encryption_key for authenticated callbacks")
         self._session = aiohttp.ClientSession()
         await self._refresh_tenant_token()
         app = web.Application()
@@ -117,16 +121,33 @@ class FeishuChannel(BaseChannel):
     # ── Webhook ──────────────────────────────────────────────────────────────
 
     async def _webhook(self, request: web.Request) -> web.Response:
+        if not self._verification_token and not self._encryption_key:
+            return web.Response(status=403, text="Webhook authentication is not configured")
         body = await request.read()
+        if self._encryption_key:
+            timestamp = str(request.headers.get("X-Lark-Request-Timestamp", ""))
+            nonce = str(request.headers.get("X-Lark-Request-Nonce", ""))
+            signature = str(request.headers.get("X-Lark-Signature", ""))
+            expected = hashlib.sha256((timestamp + nonce + self._encryption_key).encode() + body).hexdigest()
+            if not timestamp or not nonce or not hmac.compare_digest(expected, signature):
+                return web.Response(status=403, text="Invalid callback signature")
         try:
             data = json.loads(body)
         except json.JSONDecodeError:
             return web.json_response({"error": "invalid json"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "json body must be an object"}, status=400)
 
         if "encrypt" in data and self._encryption_key:
             data = self._decrypt(data["encrypt"])
             if data is None:
                 return web.json_response({"error": "decrypt failed"}, status=400)
+        if not isinstance(data, dict) or not isinstance(data.get("header", {}), dict):
+            return web.json_response({"error": "invalid callback object"}, status=400)
+
+        token = (data.get("header") or {}).get("token", "") if data.get("schema") == "2.0" else data.get("token", "")
+        if self._verification_token and not hmac.compare_digest(str(token), self._verification_token):
+            return web.Response(status=403, text="Forbidden")
 
         if data.get("type") == "url_verification":
             challenge = data.get("challenge", "")
@@ -139,31 +160,36 @@ class FeishuChannel(BaseChannel):
             if self._verification_token and token != self._verification_token:
                 return web.Response(status=403, text="Forbidden")
             event_id = header.get("event_id", "")
-            if event_id in self._seen_ids:
+            if event_id and event_id in self._seen_ids:
                 return web.json_response({"status": "ok"})
-            self._seen_ids.add(event_id)
-            if len(self._seen_ids) > 10000:
-                self._seen_ids = set(list(self._seen_ids)[-5000:])
             event = data.get("event", {})
             event_type = header.get("event_type", "")
             if event_type == "im.message.receive_v1":
-                await self._on_message(event)
+                if await self._on_message(event) is False:
+                    return web.json_response({"error": "runtime busy; retry later"}, status=503)
+            if event_id:
+                self._seen_ids.add(event_id)
+                if len(self._seen_ids) > 10000:
+                    self._seen_ids = set(list(self._seen_ids)[-5000:])
         else:
             token = data.get("token", "")
             if self._verification_token and token != self._verification_token:
                 return web.Response(status=403, text="Forbidden")
             event = data.get("event", {})
             if event.get("type") == "message":
-                await self._on_message_v1(event)
+                if await self._on_message_v1(event) is False:
+                    return web.json_response({"error": "runtime busy; retry later"}, status=503)
 
         return web.json_response({"status": "ok"})
 
-    async def _on_message(self, event: dict[str, Any]) -> None:
+    async def _on_message(self, event: dict[str, Any]) -> bool:
         sender = event.get("sender", {})
         sender_id = sender.get("sender_id", {}).get("open_id", "")
         sender_type = sender.get("sender_type", "")
         if sender_type == "app":
-            return
+            return True
+        if not self.is_allowed(sender_id):
+            return True
 
         message = event.get("message", {})
         chat_id = message.get("chat_id", "")
@@ -178,7 +204,7 @@ class FeishuChannel(BaseChannel):
                 for m in mentions
             )
             if not bot_mentioned and not await self.is_clarification_reply(sender_id, chat_id):
-                return
+                return True
 
         text = ""
         media: list[dict[str, str]] = []
@@ -205,11 +231,11 @@ class FeishuChannel(BaseChannel):
                 logger.debug("Feishu image metadata is invalid for message {}: {}", msg_id, e)
 
         if not text and not media:
-            return
+            return True
 
         receive_id_type = "chat_id" if chat_type in ("group", "p2p") else "open_id"
 
-        await self._handle_message(
+        inbound = await self._handle_message(
             sender_id=sender_id,
             chat_id=chat_id,
             text=text,
@@ -217,21 +243,27 @@ class FeishuChannel(BaseChannel):
             reply_to_id=msg_id,
             metadata={"chat_type": chat_type, "receive_id_type": receive_id_type},
             is_group=(chat_type == "group"),
+            event_id=self._native_event_id(chat_id, msg_id),
         )
+        return inbound is not None
 
-    async def _on_message_v1(self, event: dict[str, Any]) -> None:
+    async def _on_message_v1(self, event: dict[str, Any]) -> bool:
         sender_id = event.get("open_id", "")
         chat_id = event.get("open_chat_id", "")
         text = event.get("text_without_at_bot", "") or event.get("text", "")
         if not text:
-            return
-        await self._handle_message(
+            return True
+        if not self.is_allowed(sender_id):
+            return True
+        inbound = await self._handle_message(
             sender_id=sender_id,
             chat_id=chat_id,
             text=text,
             metadata={"chat_type": event.get("chat_type", ""), "receive_id_type": "chat_id"},
             is_group=(event.get("chat_type", "") == "group"),
+            event_id=self._native_event_id(chat_id, event.get("msg_id") or event.get("message_id")),
         )
+        return inbound is not None
 
     async def _download_feishu_image(self, image_key: str, msg_id: str) -> str | None:
         """Download a Feishu image by image_key via the message resource API."""

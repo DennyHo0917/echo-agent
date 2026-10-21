@@ -1,7 +1,6 @@
 """Tests for MCP modules: tool_adapter, manager, oauth."""
 from __future__ import annotations
 
-import json
 import os
 import time
 from pathlib import Path
@@ -272,7 +271,7 @@ class TestMCPOAuthClient:
             "expires_in": 3600,
             "obtained_at": time.time(),
         }
-        (tmp_path / "test_server.json").write_text(json.dumps(token_data))
+        client._save_token(token_data)
         assert client.get_access_token() == "valid_token_123"
 
     def test_get_access_token_expired(self, tmp_path):
@@ -282,7 +281,7 @@ class TestMCPOAuthClient:
             "expires_in": 3600,
             "obtained_at": time.time() - 4000,  # expired
         }
-        (tmp_path / "test_server.json").write_text(json.dumps(token_data))
+        client._save_token(token_data)
         assert client.get_access_token() is None
 
     def test_is_expired_true(self, tmp_path):
@@ -332,6 +331,6 @@ class TestMCPOAuthClient:
             "expires_in": 3600,
             "obtained_at": time.time(),
         }
-        (tmp_path / "test_server.json").write_text(json.dumps(token_data))
+        client._save_token(token_data)
         result = await client.ensure_token()
         assert result == "cached_token"

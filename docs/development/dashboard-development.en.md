@@ -35,13 +35,13 @@ pnpm preview      # Preview build output
 The Dashboard is a React SPA communicating with Gateway via:
 
 - HTTP REST API: `/api/v1/*`
-- WebSocket: `/ws` (dashboard management stream)
+- WebSocket: `/ws/dashboard` (dashboard management stream)
 
 ## Build Output
 
 Built SPA goes to `web/dist/`, bundled into the wheel at `echo_agent/_bundled/dashboard/index.html` by `hatch_build.py`.
 
-Users trigger first build via `echo-agent dashboard build`.
+Source developers can build with `echo-agent dashboard build`. Release wheels bundle the Dashboard and need no Node/pnpm at runtime.
 
 ## Testing
 

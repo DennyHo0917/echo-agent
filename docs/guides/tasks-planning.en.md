@@ -11,7 +11,7 @@ Echo Agent provides full task lifecycle management: from lightweight Todo lists 
 | **Todo** | `todo` | Lightweight task list, per-session storage, ideal for planning-phase brainstorming |
 | **Task** | `task` | Persistent task records with full state machine, priority, and Kanban tracking |
 | **Workflow** | `workflow` | DAG-based multi-step orchestration with automatic dependency resolution |
-| **Delegate** | `delegate` | Multi-agent dispatch — the main Agent splits sub-tasks for parallel worker execution |
+| **Delegate** | `delegate_task` | Multi-agent dispatch — the main Agent splits sub-tasks for parallel worker execution |
 
 ---
 
@@ -57,7 +57,7 @@ VALID_TASK_TRANSITIONS = {
     QUEUED:    {RUNNING, CANCELLED},
     RUNNING:   {REVIEW, BLOCKED, FAILED, SUSPENDED, CANCELLED},
     BLOCKED:   {QUEUED, RUNNING, CANCELLED},
-    REVIEW:    {SUCCESS, QUEUED},
+    REVIEW:    {SUCCESS, QUEUED, CANCELLED},
     SUSPENDED: {QUEUED, RUNNING, CANCELLED},
     FAILED:    {QUEUED},         # retry
     SUCCESS:   {},               # terminal
@@ -155,7 +155,7 @@ PENDING ──→ RUNNING ──→ SUCCESS
   │            │  │
   │            │  └→ WAITING (paused, awaiting)
   │            │  └→ BLOCKED
-  │            └──→ FAILED ──→ PENDING (retry whole workflow)
+  │            └──→ FAILED (terminal; inspect results before creating new work)
   └──→ CANCELLED ← (reachable from any non-terminal state)
 ```
 
@@ -167,9 +167,9 @@ PENDING ──→ RUNNING ──→ SUCCESS
   "action": "create",
   "name": "Data processing pipeline",
   "steps": [
-    {"id": "fetch", "name": "Fetch data", "tool_name": "http_get", "tool_params": {"url": "..."}},
-    {"id": "parse", "name": "Parse data", "tool_name": "extract", "tool_params": {}, "depends_on": ["fetch"]},
-    {"id": "store", "name": "Store results", "tool_name": "db_write", "tool_params": {}, "depends_on": ["parse"]}
+    {"id": "fetch", "name": "Fetch data", "tool_name": "web_fetch", "tool_params": {"url": "https://example.com"}},
+    {"id": "parse", "name": "Parse data", "tool_name": "knowledge_index", "tool_params": {"action": "status"}, "depends_on": ["fetch"]},
+    {"id": "store", "name": "Store results", "tool_name": "write_file", "tool_params": {"path": "report.txt", "content": "Replace with the verified result"}, "depends_on": ["parse"]}
   ]
 }
 ```
@@ -183,22 +183,26 @@ PENDING ──→ RUNNING ──→ SUCCESS
 | `tool_name` | string | Tool to execute |
 | `tool_params` | dict | Tool parameters |
 | `depends_on` | list[str] | List of dependency step IDs |
-| `condition` | string | Condition expression (reserved) |
-| `retry_max` | int | Step-level retry limit |
-| `timeout_seconds` | int | Timeout in seconds, default 300 |
+| `condition` | string | Reserved; only an empty string is accepted. Nonempty conditions fail validation. |
+| `retry_max` | int | Nonnegative automatic retry count after a step fails; default 0. Enable only where repeating side effects is safe. |
+| `timeout_seconds` | int | Positive timeout from Runtime dispatch, including queue/approval waits; default 300 seconds. |
+
+Creation and startup reject empty graphs, duplicate step IDs, missing dependencies, and cycles. Concurrent advancement creates each step once. A PENDING step left by a crash between task creation and workflow-map persistence is adopted on the next start/advance.
 
 ### Execution Model
 
 The Workflow engine **only orchestrates** — it resolves dependencies, creates step tasks, and advances state, but **does not execute tools**. Actual execution is performed by the Agent:
 
 1. `workflow start` → engine creates `QUEUED` tasks for steps with no dependencies
-2. Agent discovers ready step tasks via `task list` (`metadata` contains `tool_name`/`tool_params`)
-3. Agent executes: `task start` → run the tool → `task complete`
+2. Runtime TaskDispatcher claims ready tasks in isolated `task:<id>` sessions (`metadata` contains `tool_name`/`tool_params`)
+3. The Agent calls tools and closes the task with `task complete` / `task fail`; Runtime also writes the actual turn outcome as a safety net
 4. `task complete` automatically triggers `workflow.advance()`, engine checks dependencies and schedules subsequent steps
-5. All steps succeed → workflow status becomes `SUCCESS`; any step fails → workflow becomes `FAILED`
+5. Only all-success graphs become `SUCCESS`. A failure becomes `FAILED` after its explicit retry budget is exhausted; a cancelled step makes the workflow `CANCELLED`.
+
+Pause prevents unclaimed and dependent steps from starting; already claimed steps may finish. Resume reconciles their actual outcomes. Timeouts fail the step and cooperatively interrupt its exact turn; an executing tool may stop only at its next checkpoint, and prior side effects are not rolled back. Late results from an old attempt cannot finish a newer retry.
 
 !!! note "advance is best-effort, not part of the transaction"
-    Both `task complete` and `task fail` trigger one advance *after* the state has been persisted; `task cancel` does not.
+    `task complete`, `task fail`, and `task cancel` trigger one advance *after* state has been persisted.
 
     Persisting the task state and advancing the workflow are two separate steps, and the first completes first. A failed advance only logs a warning — it does not fail the tool call and does not roll back the task state. The cost is that DAG progress stalls where it is until the next explicit `workflow advance`. There is no background compensation job covering this.
 
@@ -251,35 +255,34 @@ The Workflow engine **only orchestrates** — it resolves dependencies, creates 
 
 ## Multi-Agent Delegation
 
-The `delegate` tool allows the main Agent (orchestrator) to dispatch sub-tasks to Worker Agents for parallel execution.
+The `delegate_task` tool allows the main Agent (orchestrator) to dispatch sub-tasks to Worker Agents for parallel execution.
 
 ### Invocation
 
 ```json
 {
-  "tool": "delegate",
-  "task": "Translate README into Japanese",
-  "context": "README.md at the project root, preserve formatting"
+  "tool": "delegate_task",
+  "goal": "Translate README.md at the project root into Japanese, preserving formatting"
 }
 ```
 
 ### Execution Model
 
-1. Main Agent calls `delegate`, describing the sub-task and context
-2. System creates a Worker Agent with a restricted tool set (excludes `delegate`/`spawn_task`/`clarify`, etc.)
+1. Main Agent calls `delegate_task`, describing the sub-task and context
+2. System creates a Worker Agent with a restricted tool set (excludes `delegate_task`/`spawn_task`/`clarify`, etc.)
 3. Worker executes independently, bounded by `max_iterations` and `timeout_seconds`
 4. Worker returns structured results to the main Agent
 5. Main Agent synthesizes Worker results and continues
 
 ### Security Constraints
 
-- Workers cannot call `delegate` (prevents recursive dispatch storms)
+- Workers cannot call `delegate_task` (prevents recursive dispatch storms)
 - Workers cannot message the user directly (`message`/`notify` are blocked)
 - Worker tool calls are subject to the same approval policies as the main Agent
 - Each Worker has an independent `trace_id` for audit tracking
 
 !!! info "Risk Level"
-    The `delegate` tool has `risk_level` set to `exec`, meaning it performs actual operations. In channels requiring approval, the dispatch itself must pass through the approval gate first.
+    The `delegate_task` tool has `risk_level` set to `exec`, meaning it performs actual operations. In channels requiring approval, the dispatch itself must pass through the approval gate first.
 
 ---
 
@@ -310,9 +313,9 @@ The Dashboard provides a visual Kanban board with tasks organized by status colu
 ### API Access
 
 ```
-GET  /api/tasks?board_id=default
-GET  /api/tasks?status=running
-POST /api/tasks/{id}/transition  {"status": "queued"}
+GET  /api/v1/tasks?board_id=default
+GET  /api/v1/tasks?status=running
+POST /api/v1/tasks/{id}/transition  {"status": "queued"}
 ```
 
 ---
@@ -342,6 +345,12 @@ Priority ranges from 0-9, lower numbers indicate higher priority:
 
 ## Usage Examples
 
+### Long Conversations and Clarification
+
+Compression replaces history only after receiving a complete, usable summary. Model failure, output truncation, content filtering, or a failure cooldown preserves the original history and media references. A head/tail transcript with no middle summary is never saved as successful compression. If the retained history still exceeds the model window, the request may report a context limit; retry after restoring the model or explicitly start a new session.
+
+You can answer a CLI attach clarification immediately. Answers received while the prompt is still being delivered remain available until the tool consumes them. Disconnecting or cancelling the session still follows the existing interruption flow.
+
 ### Example 1: Simple Task Tracking
 
 ```
@@ -358,9 +367,9 @@ Agent:
 ```
 Agent:
   → workflow create "Deploy pipeline" steps=[
-      {id: "test", tool_name: "shell", tool_params: {cmd: "pytest"}},
-      {id: "build", tool_name: "shell", tool_params: {cmd: "docker build"}, depends_on: ["test"]},
-      {id: "deploy", tool_name: "shell", tool_params: {cmd: "kubectl apply"}, depends_on: ["build"]}
+      {id: "test", tool_name: "exec", tool_params: {command: "pytest"}},
+      {id: "build", tool_name: "exec", tool_params: {command: "docker build"}, depends_on: ["test"]},
+      {id: "deploy", tool_name: "exec", tool_params: {command: "kubectl apply"}, depends_on: ["build"]}
     ]
   → workflow start
   → (engine auto-schedules test → build → deploy)
@@ -370,8 +379,8 @@ Agent:
 
 ```
 Agent:
-  → delegate task="Translate CHANGELOG into Japanese"
-  → delegate task="Translate CHANGELOG into Korean"
+  → delegate_task goal="Translate CHANGELOG into Japanese"
+  → delegate_task goal="Translate CHANGELOG into Korean"
   → (two Workers execute in parallel, main Agent synthesizes results)
 ```
 

@@ -530,7 +530,7 @@ class SpawnTool(Tool):
             # error on its own line) otherwise spills past the timestamped first
             # line and reads like stray un-logged stderr output.
             logger.info(
-                "Background task {} completed: {}",
+                "Background task {} finished: {}",
                 task_id, " ".join(result.split())[:300],
             )
             await self._announce(task_id, result, ctx)
@@ -544,10 +544,12 @@ class SpawnTool(Tool):
         # No tool registry wired (e.g. multi-agent disabled path): fall back to a
         # plain completion so the tool still answers, but say so honestly.
         if not self._tool_registry or not self._approval_gate:
-            resp = await self._provider.chat_with_retry(messages=[
+            resp = await asyncio.wait_for(self._provider.chat_with_retry(messages=[
                 {"role": "system", "content": "You are a background agent. Complete the task and provide a concise result."},
                 {"role": "user", "content": f"{task}\n\n{context}".strip()},
-            ])
+            ]), timeout=self._timeout_seconds)
+            if resp.finish_reason in {"error", "length", "content_filter"}:
+                return f"[failed] Model did not complete (finish_reason={resp.finish_reason})\n{resp.content or ''}"
             return resp.content or "(no response)"
 
         allowed_tools, tool_defs = self._worker_tools()
@@ -602,7 +604,7 @@ class SpawnTool(Tool):
         announce = OutboundEvent.from_text_with_media(
             channel=channel,
             chat_id=chat_id,
-            text=f"[Background task {task_id} completed]\n\n{result}",
+            text=f"[Background task {task_id} finished]\n\n{result}",
         )
         announce.metadata["_background_result"] = True
         await self._bus.publish_outbound(announce)

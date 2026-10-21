@@ -4,12 +4,10 @@
 import argparse
 from echo_agent.dependencies.skill_require import require  # noqa: E402
 
-require("skill.web-extract")
-
-import trafilatura  # noqa: E402
-
-
 def extract(url: str, output_format: str = "txt", include_links: bool = False) -> str:
+    require("skill.web-extract")
+    import trafilatura
+
     downloaded = trafilatura.fetch_url(url)
     if not downloaded:
         return f"Error: Could not fetch {url}"

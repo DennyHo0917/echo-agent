@@ -2,8 +2,8 @@
 
 Phase 1: Tool output pruning (cheap, no LLM)
 Phase 2: Boundary resolution (head / middle / tail)
-Phase 2.5: Archive middle segment (persist before lossy compression)
 Phase 3: LLM summary generation
+Phase 3.5: Archive middle segment (only after a usable summary, before replacement)
 Phase 4: Message reassembly
 Phase 5: Structural validation
 """
@@ -100,7 +100,7 @@ class ConversationCompressor(ContextEngine):
         focus_topic: str = "",
     ) -> CompressionResult:
         tokens_before = self.estimate_tokens(messages)
-        working = list(messages)
+        working = [dict(message) for message in messages]
 
         # Phase 0: Strip media_refs — they are lightweight session pointers
         # that the summarizer/boundary stages should not see.  The text
@@ -135,17 +135,6 @@ class ConversationCompressor(ContextEngine):
             len(boundary.tail_messages),
         )
 
-        if self._storage and boundary.middle_messages:
-            compression_id = uuid.uuid4().hex[:12]
-            try:
-                await self._storage.archive_messages(
-                    self._session_key or "",
-                    boundary.middle_messages,
-                    compression_id=compression_id,
-                )
-            except Exception as e:
-                logger.debug("Failed to archive middle segment: {}", e)
-
         # Phase 3: LLM summary generation
         summary = await self._summarizer.summarize(
             middle_messages=boundary.middle_messages,
@@ -157,7 +146,19 @@ class ConversationCompressor(ContextEngine):
         if summary:
             logger.debug("Phase 3: generated summary ({} chars)", len(summary))
         else:
-            logger.debug("Phase 3: summary skipped or failed")
+            # ContextStage persists results marked was_compressed. Discarding
+            # the middle after an unavailable/filtered/truncated summary would
+            # permanently erase the conversation merely because a model call
+            # failed. Retain the original messages (including media refs) and
+            # let the normal context/error boundary report any remaining limit.
+            logger.warning("Compression deferred: no usable summary; history retained")
+            return CompressionResult(
+                messages=list(messages),
+                stats=self._stats,
+                was_compressed=False,
+                tokens_before=tokens_before,
+                tokens_after=tokens_before,
+            )
 
         assembled = self._assembler.assemble(
             head=boundary.head_messages,
@@ -166,6 +167,17 @@ class ConversationCompressor(ContextEngine):
         )
 
         validated = self._validator.validate(assembled)
+
+        # Failed/cooling-down summaries retain their history and must not create
+        # another archive of it on every turn. Archive only a usable replacement.
+        if self._storage and boundary.middle_messages:
+            try:
+                await self._storage.archive_messages(
+                    self._session_key or "", boundary.middle_messages,
+                    compression_id=uuid.uuid4().hex[:12],
+                )
+            except Exception as e:
+                logger.debug("Failed to archive middle segment: {}", e)
 
         tokens_after = self.estimate_tokens(validated)
         saved = tokens_before - tokens_after

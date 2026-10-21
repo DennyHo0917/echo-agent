@@ -32,7 +32,7 @@ pip install -e ".[all,dev]"
 cd web && pnpm install --frozen-lockfile && cd ..
 
 # Verify environment
-ruff check .
+ruff check . --extend-exclude client
 python -m pytest tests/ -v --cov
 cd web && pnpm build && pnpm test --run
 ```

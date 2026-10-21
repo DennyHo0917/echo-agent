@@ -57,10 +57,10 @@ base64.b64decode("aGVsbG8=")         # b'hello'
 
 ```python
 text = "Hello 你好世界"
-chars = len(text)           # 8
-chars_no_space = len(text.replace(' ', ''))  # 7
+chars = len(text)           # 10
+chars_no_space = len(text.replace(' ', ''))  # 9
 words = len(text.split())  # 2
-chinese = len(re.findall(r'[一-鿿]', text))  # 3
+chinese = len(re.findall(r'[一-鿿]', text))  # 4
 ```
 
 ## Text Diff

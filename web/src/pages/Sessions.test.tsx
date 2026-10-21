@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { Sessions } from "./Sessions";
 import { Channels } from "./Channels";
 import { ConfirmProvider } from "../components/ConfirmDialog";
@@ -90,6 +90,42 @@ describe("Sessions 页", () => {
     fireEvent.click(await screen.findByText("cli:local"));
 
     expect(await screen.findByText(/加载历史失败：boom/)).toBeInTheDocument();
+  });
+
+  it("切换会话后丢弃旧会话迟到的更早历史", async () => {
+    let finishOlder!: (value: unknown) => void;
+    vi.spyOn(api, "apiFetch").mockImplementation(async (path: string) => {
+      if (path.startsWith("/sessions?")) return SESSIONS as never;
+      if (path.includes("/turns?")) return { turns: [] } as never;
+      if (path.includes("offset=1")) return await new Promise<unknown>((resolve) => { finishOlder = resolve; }) as never;
+      if (path.includes("feishu")) return { messages: [{ role: "user", content: "first session" }], has_more: true } as never;
+      return { messages: [{ role: "user", content: "second session" }], has_more: false } as never;
+    });
+    renderSessions();
+    fireEvent.click(await screen.findByText("feishu:oc 1"));
+    fireEvent.click(await screen.findByRole("button", { name: /加载更早/ }));
+    fireEvent.click(screen.getByText("cli:local"));
+    expect(await screen.findByText("second session")).toBeInTheDocument();
+    await act(async () => finishOlder({ messages: [{ role: "user", content: "stale private history" }], has_more: false }));
+    expect(screen.queryByText("stale private history")).not.toBeInTheDocument();
+  });
+
+  it("切换会话后丢弃旧会话迟到的执行记录", async () => {
+    let finishTurns!: (value: unknown) => void;
+    vi.spyOn(api, "apiFetch").mockImplementation(async (path: string) => {
+      if (path.startsWith("/sessions?")) return SESSIONS as never;
+      if (path.includes("feishu") && path.includes("/turns?")) return await new Promise<unknown>((resolve) => { finishTurns = resolve; }) as never;
+      if (path.includes("/turns?")) return { turns: [{ event_id: "new-turn", status: "completed" }] } as never;
+      return { messages: [{ role: "user", content: path.includes("feishu") ? "first session" : "second session" }], has_more: false } as never;
+    });
+    renderSessions();
+    fireEvent.click(await screen.findByText("feishu:oc 1"));
+    await screen.findByText("first session");
+    fireEvent.click(screen.getByText("cli:local"));
+    expect(await screen.findByText("new-turn")).toBeInTheDocument();
+    await act(async () => finishTurns({ turns: [{ event_id: "old-turn", status: "completed" }] }));
+    expect(screen.queryByText("old-turn")).not.toBeInTheDocument();
+    expect(screen.getByText("new-turn")).toBeInTheDocument();
   });
 
   it("搜索由后端在全量会话上执行", async () => {

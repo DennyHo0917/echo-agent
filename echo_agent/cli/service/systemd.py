@@ -15,6 +15,7 @@ import getpass
 import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 from echo_agent.agent.proc_lifecycle import run_owned
@@ -50,7 +51,7 @@ class SystemdUserBackend:
         unit_path.parent.mkdir(parents=True, exist_ok=True)
         unit_path.write_text(self._render(workspace, config), encoding="utf-8")
         self._systemctl(["daemon-reload"])
-        self._systemctl(["enable", SERVICE_NAME], check=False)
+        self._systemctl(["enable", SERVICE_NAME])
         print(f"Service installed: {unit_path}")
         print()
         print("Start it with: echo-agent gateway start")
@@ -61,10 +62,10 @@ class SystemdUserBackend:
         if not unit_path.exists():
             print("Service is not installed.")
             return
-        self._systemctl(["stop", SERVICE_NAME], check=False)
-        self._systemctl(["disable", SERVICE_NAME], check=False)
+        self._systemctl(["stop", SERVICE_NAME])
+        self._systemctl(["disable", SERVICE_NAME])
         unit_path.unlink()
-        self._systemctl(["daemon-reload"], check=False)
+        self._systemctl(["daemon-reload"])
         print("Service uninstalled.")
 
     def start(self) -> None:
@@ -76,7 +77,7 @@ class SystemdUserBackend:
         print(f"  Logs: journalctl --user -u {SERVICE_NAME} -f")
 
     def stop(self) -> None:
-        self._systemctl(["stop", SERVICE_NAME], check=False)
+        self._systemctl(["stop", SERVICE_NAME])
         print("Gateway service stopped.")
 
     def restart(self) -> None:
@@ -170,10 +171,13 @@ class SystemdSystemBackend:
             print("Start it with: echo-agent gateway start --system")
             return
         content = self._render(workspace, config)
-        tmp = Path(f"/tmp/{SERVICE_NAME}.service")
-        tmp.write_text(content, encoding="utf-8")
-        self._sudo(["cp", str(tmp), str(unit_path)])
-        tmp.unlink()
+        # A predictable /tmp source can be planted or replaced by another
+        # local user before the privileged copy. Keep it in a private directory
+        # and reclaim it even when sudo/copy fails or is interrupted.
+        with tempfile.TemporaryDirectory(prefix=f"{SERVICE_NAME}-") as staging:
+            tmp = Path(staging) / f"{SERVICE_NAME}.service"
+            tmp.write_text(content, encoding="utf-8")
+            self._sudo(["cp", str(tmp), str(unit_path)])
         self._sudo(["systemctl", "daemon-reload"])
         self._sudo(["systemctl", "enable", SERVICE_NAME])
         print(f"Service installed: {unit_path}")
@@ -185,8 +189,8 @@ class SystemdSystemBackend:
         if not unit_path.exists():
             print("Service is not installed.")
             return
-        self._sudo(["systemctl", "stop", SERVICE_NAME], check=False)
-        self._sudo(["systemctl", "disable", SERVICE_NAME], check=False)
+        self._sudo(["systemctl", "stop", SERVICE_NAME])
+        self._sudo(["systemctl", "disable", SERVICE_NAME])
         self._sudo(["rm", "-f", str(unit_path)])
         self._sudo(["systemctl", "daemon-reload"])
         print("Service uninstalled.")
@@ -199,7 +203,7 @@ class SystemdSystemBackend:
         print("Gateway service started.")
 
     def stop(self) -> None:
-        self._sudo(["systemctl", "stop", SERVICE_NAME], check=False)
+        self._sudo(["systemctl", "stop", SERVICE_NAME])
         print("Gateway service stopped.")
 
     def restart(self) -> None:

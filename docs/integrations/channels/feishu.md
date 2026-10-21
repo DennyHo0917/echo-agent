@@ -15,6 +15,7 @@
 ```yaml
 channels:
   feishu:
+    enabled: true
     app_id: "cli_a1b2c3d4e5f6g7h8"
     app_secret: "your-app-secret-here"
     verification_token: "your-verification-token"
@@ -37,6 +38,10 @@ channels:
 | `port` | 否 | `8083` | 监听端口 |
 | `group_policy` | 否 | `mention` | 群聊策略：`mention` 仅 @机器人 时响应，`all` 响应全部 |
 | `bot_open_id` | 否 | — | 机器人 open_id，用于 @提及 检测 |
+
+回调必须配置 Verification Token 或 Encrypt Key；均为空时通道拒绝启动且 POST 返回 403。配置 Encrypt Key 后，对原始请求体校验 `X-Lark-Signature`（SHA256(timestamp + nonce + key + body)），配置 Verification Token 时同时校验消息中的 token。反向代理须保留 `X-Lark-Request-Timestamp`、`X-Lark-Request-Nonce`、`X-Lark-Signature` 和原始 body。
+
+只有 Runtime 接收入站后才确认业务事件；队列拒绝返回 503，便于飞书重投递。原生消息 ID 绑定到既有持久化回合记录，重启后的重复消息不会以随机事件 ID 再执行一次。
 
 ## 凭证获取
 

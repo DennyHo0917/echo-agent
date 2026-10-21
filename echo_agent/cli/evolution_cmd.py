@@ -6,7 +6,6 @@ import asyncio
 import json
 import sys
 import textwrap
-from pathlib import Path
 from typing import Any
 
 
@@ -73,7 +72,7 @@ def _format_run(run: Any) -> str:
 
 
 async def _status(config_path: str | None, workspace: str | None) -> int:
-    from echo_agent.app import bootstrap as _bootstrap
+    from echo_agent.app import AppRuntime, bootstrap as _bootstrap
 
     overrides = {"workspace": workspace} if workspace else None
     ctx = await _bootstrap(config_path=config_path, overrides=overrides)
@@ -82,7 +81,8 @@ async def _status(config_path: str | None, workspace: str | None) -> int:
             print("Evolution is disabled. Set evolution.enabled = true in your config.")
             return 1
         engine = ctx.agent.evolution
-        await engine.start()
+        # Inspection/rollback needs persistence, not the online trigger loop.
+        await engine.store.init_schema()
         try:
             summary = await engine.status_summary()
             latest = await engine.list_recent_runs(limit=1)
@@ -105,11 +105,11 @@ async def _status(config_path: str | None, workspace: str | None) -> int:
         finally:
             await engine.stop()
     finally:
-        await ctx.storage.close()
+        await AppRuntime(ctx).stop()
 
 
 async def _run_once(config_path: str | None, workspace: str | None) -> int:
-    from echo_agent.app import bootstrap as _bootstrap
+    from echo_agent.app import AppRuntime, bootstrap as _bootstrap
 
     overrides = {"workspace": workspace} if workspace else None
     ctx = await _bootstrap(config_path=config_path, overrides=overrides)
@@ -120,17 +120,13 @@ async def _run_once(config_path: str | None, workspace: str | None) -> int:
         engine = ctx.agent.evolution
         await ctx.bus.start()
         await ctx.agent.start()
-        try:
-            print("Running evolution pass... this may take a while (runs A/B eval).")
-            run = await engine.run_evolution(trigger="manual")
-            print("\nResult:")
-            print(_format_run(run))
-            return 0
-        finally:
-            await ctx.bus.stop()
-            await ctx.agent.stop()
+        print("Running evolution pass... this may take a while (runs A/B eval).")
+        run = await engine.run_evolution(trigger="manual")
+        print("\nResult:")
+        print(_format_run(run))
+        return 0
     finally:
-        await ctx.storage.close()
+        await AppRuntime(ctx).stop()
 
 
 async def _list_candidates(
@@ -138,7 +134,7 @@ async def _list_candidates(
     workspace: str | None,
     status_filter: str,
 ) -> int:
-    from echo_agent.app import bootstrap as _bootstrap
+    from echo_agent.app import AppRuntime, bootstrap as _bootstrap
 
     overrides = {"workspace": workspace} if workspace else None
     ctx = await _bootstrap(config_path=config_path, overrides=overrides)
@@ -147,7 +143,8 @@ async def _list_candidates(
             print("Evolution is disabled.")
             return 1
         engine = ctx.agent.evolution
-        await engine.start()
+        # Inspection/rollback needs persistence, not the online trigger loop.
+        await engine.store.init_schema()
         try:
             status = status_filter or None
             candidates = await engine.list_candidates(status=status, limit=200)
@@ -164,11 +161,11 @@ async def _list_candidates(
         finally:
             await engine.stop()
     finally:
-        await ctx.storage.close()
+        await AppRuntime(ctx).stop()
 
 
 async def _show_candidate(candidate_id: str, config_path: str | None, workspace: str | None) -> int:
-    from echo_agent.app import bootstrap as _bootstrap
+    from echo_agent.app import AppRuntime, bootstrap as _bootstrap
 
     overrides = {"workspace": workspace} if workspace else None
     ctx = await _bootstrap(config_path=config_path, overrides=overrides)
@@ -177,7 +174,8 @@ async def _show_candidate(candidate_id: str, config_path: str | None, workspace:
             print("Evolution is disabled.")
             return 1
         engine = ctx.agent.evolution
-        await engine.start()
+        # Inspection/rollback needs persistence, not the online trigger loop.
+        await engine.store.init_schema()
         try:
             cand = await engine.store.get_candidate(candidate_id)
             if cand is None:
@@ -188,12 +186,12 @@ async def _show_candidate(candidate_id: str, config_path: str | None, workspace:
         finally:
             await engine.stop()
     finally:
-        await ctx.storage.close()
+        await AppRuntime(ctx).stop()
 
 
 async def _promote_candidate(candidate_id: str, config_path: str | None, workspace: str | None) -> int:
     """Manually promote a candidate held in `needs_review` after re-running its eval."""
-    from echo_agent.app import bootstrap as _bootstrap
+    from echo_agent.app import AppRuntime, bootstrap as _bootstrap
 
     overrides = {"workspace": workspace} if workspace else None
     ctx = await _bootstrap(config_path=config_path, overrides=overrides)
@@ -204,34 +202,30 @@ async def _promote_candidate(candidate_id: str, config_path: str | None, workspa
         engine = ctx.agent.evolution
         await ctx.bus.start()
         await ctx.agent.start()
-        try:
-            cand = await engine.store.get_candidate(candidate_id)
-            if cand is None:
-                print(f"Candidate '{candidate_id}' not found.")
-                return 1
-            if cand.status not in ("pending", "needs_review", "rejected"):
-                print(f"Candidate is in status '{cand.status}'; only pending/needs_review/rejected may be promoted.")
-                return 1
-            cand.status = "pending"
-            cand.rejected_reason = ""
-            await engine.store.update_candidate(cand)
-            decision = await engine._gate.evaluate(cand)
-            print(json.dumps({
-                "promoted": decision.promoted,
-                "reason": decision.reason,
-                "baseline": decision.baseline,
-                "with_candidate": decision.with_candidate,
-            }, ensure_ascii=False, indent=2))
-            return 0 if decision.promoted else 1
-        finally:
-            await ctx.bus.stop()
-            await ctx.agent.stop()
+        cand = await engine.store.get_candidate(candidate_id)
+        if cand is None:
+            print(f"Candidate '{candidate_id}' not found.")
+            return 1
+        if cand.status not in ("pending", "needs_review", "rejected"):
+            print(f"Candidate is in status '{cand.status}'; only pending/needs_review/rejected may be promoted.")
+            return 1
+        cand.status = "pending"
+        cand.rejected_reason = ""
+        await engine.store.update_candidate(cand)
+        decision = await engine._gate.evaluate(cand)
+        print(json.dumps({
+            "promoted": decision.promoted,
+            "reason": decision.reason,
+            "baseline": decision.baseline,
+            "with_candidate": decision.with_candidate,
+        }, ensure_ascii=False, indent=2))
+        return 0 if decision.promoted else 1
     finally:
-        await ctx.storage.close()
+        await AppRuntime(ctx).stop()
 
 
 async def _rollback(skill: str, config_path: str | None, workspace: str | None) -> int:
-    from echo_agent.app import bootstrap as _bootstrap
+    from echo_agent.app import AppRuntime, bootstrap as _bootstrap
 
     overrides = {"workspace": workspace} if workspace else None
     ctx = await _bootstrap(config_path=config_path, overrides=overrides)
@@ -240,7 +234,8 @@ async def _rollback(skill: str, config_path: str | None, workspace: str | None) 
             print("Evolution is disabled.")
             return 1
         engine = ctx.agent.evolution
-        await engine.start()
+        # Inspection/rollback needs persistence, not the online trigger loop.
+        await engine.store.init_schema()
         try:
             ok, message = await engine.rollback_skill(skill)
             print(message)
@@ -248,7 +243,7 @@ async def _rollback(skill: str, config_path: str | None, workspace: str | None) 
         finally:
             await engine.stop()
     finally:
-        await ctx.storage.close()
+        await AppRuntime(ctx).stop()
 
 
 _DEFAULT_DATASET = """\
@@ -290,15 +285,9 @@ cases:
 
 
 def _init_dataset(config_path: str | None, workspace: str | None) -> int:
-    from echo_agent.config.loader import load_config, resolve_config_file
+    from echo_agent.cli.workspace import load_config_and_workspace
 
-    config_file = resolve_config_file(config_path, search_dir=workspace)
-    overrides = {"workspace": workspace} if workspace else None
-    config = load_config(config_path=config_file, overrides=overrides)
-
-    ws = Path(config.workspace).expanduser()
-    if not ws.is_absolute():
-        ws = (Path.cwd() / ws).resolve()
+    config, ws = load_config_and_workspace(config_path, workspace)
     dataset_path = ws / config.evolution.eval_dataset_path
     dataset_path.parent.mkdir(parents=True, exist_ok=True)
     if dataset_path.exists():

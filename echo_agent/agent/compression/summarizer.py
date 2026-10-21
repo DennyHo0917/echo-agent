@@ -121,7 +121,7 @@ class LLMSummarizer:
                 model=model,
                 max_tokens=budget + 500,
             )
-            if response.finish_reason == "error" or not response.content:
+            if response.finish_reason in {"error", "length", "content_filter"} or not (response.content or "").strip():
                 logger.warning("Summary generation failed: {}", response.content)
                 stats.last_summary_failure_at = time.time()
                 return None

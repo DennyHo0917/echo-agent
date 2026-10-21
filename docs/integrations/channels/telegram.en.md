@@ -105,9 +105,11 @@ Proxy support is implemented via `aiohttp_socks`. Make sure the dependency is in
 
 Offset persistence uses atomic writes (write to temp file, then rename) to `data_dir`. Corruption should not occur under normal conditions. If it does:
 
-1. Stop the Bot.
-2. Delete the offset file in `data_dir`.
-3. Restart the Bot. It will begin processing from the latest message (skipping history).
+1. Stop the channel and preserve the damaged file.
+2. Restore the matching bot offset from backup; deleting it does not mean skipping history.
+3. Without a backup, reconcile retained platform messages and existing external side effects before rebuilding the cursor. The platform may redeliver old messages.
+
+The offset advances only after Runtime admission. Native message IDs also bind to the durable turn record for duplicate detection.
 
 ### HTML special characters causing send failures?
 

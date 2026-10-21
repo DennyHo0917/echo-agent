@@ -1031,7 +1031,7 @@ class TestConfigAPI:
         assert data["models"]["nested"]["timeout"] == 5
 
     @pytest.mark.asyncio
-    async def test_update_config_validates_persists_and_updates_live_model(self, tmp_path):
+    async def test_update_config_validates_persists_without_mutating_runtime(self, tmp_path):
         import yaml
 
         from echo_agent.config.schema import Config
@@ -1044,7 +1044,8 @@ class TestConfigAPI:
 
         resp = await api.update_config(_Request(body={"changes": {"ui.locale": "zh"}}))
         assert resp.status == 200
-        assert config.ui.locale == "zh"
+        # Saving is not a live reconfiguration of already constructed services.
+        assert config.ui.locale == "auto"
         saved = yaml.safe_load(target.read_text(encoding="utf-8"))
         assert saved["ui"]["locale"] == "zh"
         assert saved["custom"]["keep"] is True
@@ -1081,7 +1082,7 @@ class TestConfigAPI:
         assert resp.status == 200
         saved = yaml.safe_load(server._config_path.read_text(encoding="utf-8"))
         assert saved["channels"]["telegram"]["enabled"] is True
-        assert config.channels.telegram.enabled is True
+        assert config.channels.telegram.enabled is False
 
 def test_sanitize_helpers():
     from echo_agent.gateway.api.config import _sanitize

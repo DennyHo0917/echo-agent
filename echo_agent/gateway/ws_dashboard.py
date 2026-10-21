@@ -114,14 +114,21 @@ class DashboardWebSocket:
                     data = json.loads(msg.data)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(data, dict):
+                    await ws.send_json({"type": "error", "message": "JSON body must be an object"})
+                    continue
 
                 msg_type = data.get("type")
 
                 if msg_type == "auth":
+                    if authenticated:
+                        await ws.send_json({"type": "error", "message": "already authenticated"})
+                        continue
                     token = data.get("token", "")
-                    if self._server.auth.authenticate_token(token):
+                    if isinstance(token, str) and self._server.auth.authenticate_token(token):
                         if not authenticated:
                             authenticated = True
+                            client.is_admin = self._server.auth.authenticate_admin_token(token)
                             self._unauthenticated -= 1
                             auth_deadline.mark_authenticated()
                         # Move out of pre-auth bookkeeping now that we are
@@ -143,12 +150,18 @@ class DashboardWebSocket:
                     await ws.send_json({"type": "error", "message": "not authenticated"})
 
                 elif msg_type == "subscribe":
-                    requested = [str(c) for c in (data.get("channels") or [])]
+                    requested = data.get("channels") or []
+                    if not isinstance(requested, list) or any(not isinstance(c, str) for c in requested):
+                        await ws.send_json({"type": "error", "message": "channels must be a list of strings"})
+                        continue
                     known = set(self._EVENT_CHANNEL_MAP.values())
-                    accepted = [c for c in requested if c in known]
+                    # Session/turn HTTP reads require admin scope. Their live
+                    # events contain transcript text too and need the same gate.
+                    forbidden = [c for c in requested if c == "sessions" and not client.is_admin]
+                    accepted = [c for c in requested if c in known and c not in forbidden]
                     unknown = [c for c in requested if c not in known]
                     client.subscriptions.update(accepted)
-                    if unknown:
+                    if unknown or forbidden:
                         # Silently accepting an unknown channel produced a
                         # subscription that could never deliver anything, which
                         # the UI could not distinguish from an idle one.
@@ -157,7 +170,8 @@ class DashboardWebSocket:
                                 "type": "subscribe_error",
                                 "channels": sorted(accepted),
                                 "unknown": unknown,
-                                "message": "unknown channel(s)",
+                                "forbidden": forbidden,
+                                "message": "unknown or forbidden channel(s)",
                             }
                         )
                     else:
@@ -169,7 +183,10 @@ class DashboardWebSocket:
                         )
 
                 elif msg_type == "unsubscribe":
-                    channels = [str(c) for c in (data.get("channels") or [])]
+                    channels = data.get("channels") or []
+                    if not isinstance(channels, list) or any(not isinstance(c, str) for c in channels):
+                        await ws.send_json({"type": "error", "message": "channels must be a list of strings"})
+                        continue
                     client.subscriptions -= set(channels)
                     await ws.send_json({"type": "unsubscribed", "channels": channels})
         finally:
@@ -209,13 +226,18 @@ class DashboardWebSocket:
         subscribers = [
             (cid, client)
             for cid, client in list(self._clients.items())
-            if ch in client.subscriptions
+            if ch in client.subscriptions and (ch != "sessions" or client.is_admin)
         ]
 
         async def _send(cid: str, client: _DashboardClient) -> tuple[str, bool]:
             try:
+                # Read tokens can refresh aggregate memory counts, but must not
+                # receive cross-principal entry identifiers or scope metadata.
+                frame = message
+                if ch == "memory" and not client.is_admin:
+                    frame = json.dumps({"type": event_type, "payload": {"changed": True}})
                 await asyncio.wait_for(
-                    client.ws.send_str(message),
+                    client.ws.send_str(frame),
                     timeout=_BROADCAST_SEND_TIMEOUT_SECONDS,
                 )
                 return cid, True
@@ -258,9 +280,10 @@ class DashboardWebSocket:
 
 
 class _DashboardClient:
-    __slots__ = ("id", "ws", "subscriptions")
+    __slots__ = ("id", "ws", "subscriptions", "is_admin")
 
     def __init__(self, client_id: str, ws: web.WebSocketResponse):
         self.id = client_id
         self.ws = ws
         self.subscriptions: set[str] = set()
+        self.is_admin = False

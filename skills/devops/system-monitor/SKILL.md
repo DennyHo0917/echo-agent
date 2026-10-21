@@ -75,3 +75,7 @@ For persistent monitoring with dashboards, consider:
 - Prometheus + Grafana (heavy but powerful)
 - Glances (`pip install glances`) — terminal dashboard
 - psutil + SQLite for historical data
+
+## Automation boundary
+
+The YAML below is an operator/Agent recipe. `system_check.py` uses its CLI arguments and built-in thresholds; it does not read this file, watch continuously or deliver alerts. For periodic checks and notifications, create and authorize a core Cron job explicitly.

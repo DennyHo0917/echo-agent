@@ -238,15 +238,18 @@
       <div>
         <h1 class="title">Echo Gateway</h1>
         <p class="subtitle">A minimal frontend for the Gateway/WebSocket loop. Authenticate once, then send messages and watch live outbound events.</p>
-        <!-- Reaching this page at all means _resolve_dashboard_dir() found no
-             built SPA (gateway/server.py), so this needs no runtime condition. -->
         <p class="subtitle" style="border-left: 3px solid #d0a215; padding-left: 10px; margin-top: 12px;">
-          <strong>这是内置的简化界面</strong>，完整 Dashboard 尚未构建。
-          在交互式终端运行 <code>echo-agent dashboard build</code> 即可启用完整界面。
+          <strong>这是内置的简化界面</strong>。若首页尚无完整 Dashboard，
+          在源码安装环境运行 <code>echo-agent dashboard build</code>，或安装包含 Dashboard 的正式 wheel，即可启用完整界面。
           <br />
-          <span lang="en">This is the built-in simplified page; the full Dashboard has not been built.
-          Run <code>echo-agent dashboard build</code> in an interactive terminal to enable it.</span>
+          <span lang="en">This is the built-in simplified page. If the home page has no full Dashboard,
+          Build with <code>echo-agent dashboard build</code> from a source installation, or install a release wheel with the Dashboard included.</span>
         </p>
+      </div>
+
+      <div class="field">
+        <label for="token">API / Admin token</label>
+        <input id="token" type="password" autocomplete="off" placeholder="Required when Gateway authentication is enabled" />
       </div>
 
       <div class="row">
@@ -267,7 +270,7 @@
         </div>
         <div class="field">
           <label for="healthUrl">Health</label>
-          <input id="healthUrl" value="/api/v1/health" />
+          <input id="healthUrl" readonly />
         </div>
       </div>
 
@@ -309,10 +312,22 @@
     const sendBtn = document.getElementById("sendBtn");
     const healthBtn = document.getElementById("healthBtn");
 
-    const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
-    wsPathEl.textContent = wsUrl;
-
+    let wsUrl = "";
+    let apiPrefix = "";
     let socket = null;
+    let authenticated = false;
+    // Metadata contains paths and auth requirements only, never credentials.
+    const ready = fetch("/meta", { cache: "no-store" }).then(async (response) => {
+      if (!response.ok) throw new Error("Gateway bootstrap metadata unavailable");
+      const meta = await response.json();
+      apiPrefix = meta.api_prefix;
+      wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${meta.interactive_ws_path}`;
+      wsPathEl.textContent = wsUrl;
+      document.getElementById("healthUrl").value = `${apiPrefix}/health`;
+      updateStatus(meta.auth_required ? "Enter your token to connect" : "Ready (authentication disabled)");
+    });
+    // Attach a handler immediately; button handlers still receive this error.
+    ready.catch((error) => updateStatus(String(error), true));
 
     function value(id) {
       return document.getElementById(id).value.trim();
@@ -336,10 +351,14 @@
     }
 
     async function connect() {
+      await ready;
       if (socket && socket.readyState === WebSocket.OPEN) {
         return;
       }
 
+      authenticated = false;
+      connectBtn.disabled = true;
+      sendBtn.disabled = true;
       updateStatus("Connecting…");
       transportEl.textContent = "connecting";
       socket = new WebSocket(wsUrl);
@@ -348,6 +367,7 @@
         transportEl.textContent = "open";
         socket.send(JSON.stringify({
           type: "auth",
+          token: value("token"),
           platform: value("platform"),
           user_id: value("userId"),
           chat_id: value("chatId")
@@ -357,11 +377,14 @@
       socket.onmessage = (event) => {
         const data = JSON.parse(event.data);
         if (data.type === "auth_ok") {
+          authenticated = true;
+          sendBtn.disabled = false;
           sessionKeyEl.textContent = `session: ${data.session_key}`;
           updateStatus("Connected");
           appendMeta(data);
           return;
         }
+        if (data.error) updateStatus(data.error, true);
         if (data.type === "message") {
           appendBubble("agent", data.text || "(empty)");
           return;
@@ -374,26 +397,30 @@
       };
 
       socket.onclose = () => {
+        authenticated = false;
+        connectBtn.disabled = false;
+        sendBtn.disabled = false;
         transportEl.textContent = "closed";
-        updateStatus("Disconnected");
+        if (!statusEl.classList.contains("error")) updateStatus("Disconnected");
       };
     }
 
     async function sendMessage() {
+      await ready;
       const text = value("message");
       if (!text) {
         return;
       }
       appendBubble("user", text);
 
-      if (socket && socket.readyState === WebSocket.OPEN) {
+      if (socket && socket.readyState === WebSocket.OPEN && authenticated) {
         socket.send(JSON.stringify({ type: "message", text }));
         return;
       }
 
-      const response = await fetch("/api/v1/message", {
+      const response = await fetch(`${apiPrefix}/message`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${value("token")}` },
         body: JSON.stringify({
           platform: value("platform"),
           user_id: value("userId"),
@@ -418,7 +445,10 @@
     }
 
     async function checkHealth() {
-      const response = await fetch(value("healthUrl"));
+      await ready;
+      const response = await fetch(value("healthUrl"), {
+        headers: { "Authorization": `Bearer ${value("token")}` },
+      });
       const data = await response.json();
       appendMeta(data);
     }

@@ -15,6 +15,7 @@ The WeCom channel receives messages via Webhook callbacks and sends messages thr
 ```yaml
 channels:
   wecom:
+    enabled: true
     corp_id: "ww1234567890abcdef"
     agent_id: "1000002"
     secret: "your-app-secret-here"
@@ -74,12 +75,12 @@ GET /wecom?msg_signature=xxx&timestamp=xxx&nonce=xxx&echostr=xxx
 Verification steps:
 
 1. Extract `msg_signature`, `timestamp`, `nonce`, and `echostr` parameters
-2. Compute SHA1 signature using `token`, `timestamp`, `nonce`, and decrypted `echostr`
+2. Compute SHA1 signature using `token`, `timestamp`, `nonce`, and the received encrypted `echostr`
 3. Compare the computed signature against `msg_signature`
 4. If valid, return the decrypted `echostr` plaintext
 
 ```text
-SHA1(sort(token, timestamp, nonce, echostr_decrypt)) == msg_signature
+SHA1(sort(token, timestamp, nonce, echostr_ciphertext)) == msg_signature
 ```
 
 ### Message Reception Flow
@@ -164,4 +165,4 @@ All callback requests must pass signature verification to prevent forged request
     3. Check IP allowlist settings (if configured)
 
 !!! question "Q: How to verify messages are from WeCom?"
-    Via `msg_signature` verification. The signature is based on SHA1 of Token + Timestamp + Nonce + EncryptedContent, which cannot be forged.
+    Via `msg_signature` verification. The signature is based on SHA1 of Token + Timestamp + Nonce + EncryptedContent, whose authenticity depends on keeping the callback Token secret.

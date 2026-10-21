@@ -193,7 +193,6 @@ graph TB
     tools --> tools_pkg
     tools --> mcp_pkg
     loop --> multi_agent
-    multi_agent --> a2a_pkg
     loop --> compression
     loop --> consolidation
     consolidation --> mem_consolidator
@@ -213,5 +212,5 @@ graph TB
 | Channel-agnostic core | AgentLoop is fully decoupled from channel implementations; same logic handles messages from any source |
 | Pipeline stages | Processing pipeline divided into ContextStage -> InferenceStage -> ResponseStage |
 | Default security controls | ToolPolicy admission, ShellGuard command-policy checks, and ApprovalGate review; command checks do not provide OS-level isolation |
-| Memory-augmented | 4-tier memory (working / episodic / semantic / procedural) injected into every context build |
+| Memory-augmented | 4-tier memory (working / episodic / semantic / archival) injected into every context build |
 | Self-evolving | Trajectory capture and evolution engine enable autonomous skill improvement |

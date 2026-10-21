@@ -3,7 +3,8 @@
   "save": "Validate and save",
   "saveSuccess": "Configuration saved safely",
   "saveFailed": "Failed to save configuration",
-  "restartRequired": "Configuration saved. Channel switches take effect immediately; restart Echo Agent to fully apply other runtime settings.",
+  "restartRequired": "These saved settings differ from the running configuration and take effect after restarting Echo Agent. Current values are available under advanced details. Use channel management to start or stop a channel.",
+  "managedSettings": "Some settings are managed by environment variables or startup arguments and are locked. Update the service startup settings and restart. Saving other settings preserves these values.",
   "advancedReadonly": "View complete redacted configuration (read-only)",
   "sections": { "interface": "Interface and observability", "capabilities": "Agent capabilities", "cost": "Cost and budget" },
   "fields": {

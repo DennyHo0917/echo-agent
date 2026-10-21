@@ -13,7 +13,7 @@ import json
 import os
 import tempfile
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -72,10 +72,10 @@ class ApprovalManager:
         self._load_state()
 
     def needs_approval(self, action: str) -> bool:
-        if action in self._auto_approve:
-            return False
         if action in self._auto_deny:
             return True
+        if action in self._auto_approve:
+            return False
         if action in self._require:
             return True
         return self._default_policy == "ask"
@@ -99,6 +99,13 @@ class ApprovalManager:
         has stated a policy, and ``require`` does not revoke it.
         """
         params = params or {}
+        # Denial has priority over both configured convenience grants and
+        # approvals restored from an earlier policy. Gate callers and direct
+        # manager users must observe the same explicit restriction.
+        if action in self._auto_deny:
+            req = ApprovalRequest(action=action, tool_name=tool_name, params=params, user_id=user_id, status=ApprovalStatus.DENIED, reason="auto-denied by policy")
+            self._history.append(req)
+            return req
         signature = self._signature(action, tool_name, params, user_id)
         if signature in self._approved_signatures:
             self._approved_signatures.remove(signature)
@@ -108,10 +115,6 @@ class ApprovalManager:
             return req
         if action in self._auto_approve:
             req = ApprovalRequest(action=action, tool_name=tool_name, params=params, user_id=user_id, status=ApprovalStatus.APPROVED)
-            self._history.append(req)
-            return req
-        if action in self._auto_deny:
-            req = ApprovalRequest(action=action, tool_name=tool_name, params=params, user_id=user_id, status=ApprovalStatus.DENIED, reason="auto-denied by policy")
             self._history.append(req)
             return req
         if require or action in self._require:
@@ -421,25 +424,38 @@ class CredentialManager:
         raise RuntimeError(f"Unsupported credential encoding: {encoding}")
 
     def _load(self) -> None:
-        if not self._store_path.exists():
-            return
+        from echo_agent.storage.errors import CorruptData, StorageUnavailable
+
         try:
-            data = json.loads(self._store_path.read_text(encoding="utf-8"))
+            raw = self._store_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise StorageUnavailable(f"Cannot read credential store: {self._store_path}") from exc
+        try:
+            data = json.loads(raw)
+            if not isinstance(data, dict) or not isinstance(data.get("credentials", []), list):
+                raise ValueError("expected a credential object containing a list")
+            loaded: dict[str, Credential] = {}
             for item in data.get("credentials", []):
+                if not isinstance(item, dict) or not all(isinstance(item.get(k), str) for k in ("id", "name")):
+                    raise ValueError("invalid credential record")
+                if not item["id"] or item["id"] in loaded:
+                    raise ValueError("duplicate or empty credential id")
                 value = self._decode_secret(item)
                 cred = Credential(
                     id=item["id"], name=item["name"],
                     tool_scope=item.get("tool_scope", "*"),
                     value_hash=item.get("value_hash", ""),
                     created_at=item.get("created_at", ""),
-                    rotated_at=item.get("rotated_at", ""),
-                    _value=value,
+                    rotated_at=item.get("rotated_at", ""), _value=value,
                 )
-                self._credentials[cred.id] = cred
+                loaded[cred.id] = cred
         except RuntimeError:
-            raise  # 解密失败属确定性错误，必须显式暴露
-        except Exception as e:
-            logger.warning("Failed to load credentials: {}", e)
+            raise  # Wrong encryption keys must remain an explicit failure.
+        except (ValueError, TypeError, KeyError, UnicodeError) as exc:
+            raise CorruptData(f"Invalid credential store: {self._store_path}") from exc
+        self._credentials = loaded
 
     def _save(self) -> None:
         self._store_path.parent.mkdir(parents=True, exist_ok=True)
@@ -465,16 +481,37 @@ class CredentialManager:
             "encryption_key_env": self._encryption_key_env,
             "credentials": items,
         }
-        self._store_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        fd, temporary = tempfile.mkstemp(dir=self._store_path.parent, prefix=".credentials_", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self._store_path)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                # The original atomic-write error takes precedence; a failed
+                # temporary-file cleanup must not replace that diagnostic.
+                pass
+            raise
+
+    def _commit(self, credentials: dict[str, Credential]) -> None:
+        previous, self._credentials = self._credentials, credentials
+        try:
+            self._save()
+        except BaseException:
+            self._credentials = previous
+            raise
 
     def store(self, name: str, value: str, tool_scope: str = "*") -> Credential:
         cred = Credential(
             name=name, tool_scope=tool_scope, _value=value,
             value_hash=hashlib.sha256(value.encode()).hexdigest()[:16],
         )
-        self._credentials[cred.id] = cred
+        self._commit({**self._credentials, cred.id: cred})
         self._audit_log("store", cred)
-        self._save()
         return cred
 
     def get(self, name: str, tool_scope: str = "*") -> str | None:
@@ -487,21 +524,21 @@ class CredentialManager:
     def rotate(self, name: str, new_value: str) -> bool:
         for cred in self._credentials.values():
             if cred.name == name:
-                cred._value = new_value
-                cred.value_hash = hashlib.sha256(new_value.encode()).hexdigest()[:16]
-                cred.rotated_at = datetime.now().isoformat()
-                self._audit_log("rotate", cred)
-                self._save()
+                updated = replace(cred, _value=new_value,
+                                  value_hash=hashlib.sha256(new_value.encode()).hexdigest()[:16],
+                                  rotated_at=datetime.now().isoformat())
+                self._commit({**self._credentials, cred.id: updated})
+                self._audit_log("rotate", updated)
                 return True
         return False
 
     def delete(self, name: str) -> bool:
         to_remove = [cid for cid, c in self._credentials.items() if c.name == name]
-        for cid in to_remove:
-            self._audit_log("delete", self._credentials[cid])
-            del self._credentials[cid]
-        if to_remove:
-            self._save()
+        removed = [self._credentials[cid] for cid in to_remove]
+        if removed:
+            self._commit({cid: credential for cid, credential in self._credentials.items() if cid not in to_remove})
+            for credential in removed:
+                self._audit_log("delete", credential)
         return bool(to_remove)
 
     def get_for_tool(self, tool_name: str) -> dict[str, str]:

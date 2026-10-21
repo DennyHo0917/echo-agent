@@ -4,17 +4,12 @@
 import argparse
 from pathlib import Path
 
-try:
-    from echo_agent.dependencies.skill_require import require
-    require("skill.voice-note")
-except ImportError:
-    pass
-
-from faster_whisper import WhisperModel  # noqa: E402
+from echo_agent.dependencies.skill_require import require
 
 
 def transcribe(audio_file, model_size="base", language=None, output=None):
     require("skill.voice-note")
+    from faster_whisper import WhisperModel
 
     model = WhisperModel(model_size, device="cpu", compute_type="int8")
     segments, info = model.transcribe(audio_file, language=language)

@@ -220,8 +220,29 @@ async def _import_memory_md(store, memory_dir: Path, dry_run: bool, owner_key: s
 def run_migrate_command(
     action, *, config_path=None, workspace=None, dry_run=False, yes=False, adopt_empty=False,
 ) -> int:
-    from echo_agent.cli.prompt import PromptAborted, prompt_yes_no
     from echo_agent.cli.workspace import load_config_and_workspace
+    from echo_agent.runtime_lock import InstanceLockError, acquire_instance_lock
+
+    config, ws = load_config_and_workspace(config_path, workspace)
+    lock = None
+    writes = action == "rollback" or (action in ("run", "memory-md") and not dry_run)
+    if writes:
+        try:
+            lock = acquire_instance_lock(ws, role="memory migration")
+        except InstanceLockError:
+            print("工作区正在运行：请先停止 Gateway / Agent，再执行离线记忆迁移或回滚。")
+            return 1
+    try:
+        return _run_migrate_command(
+            action, config=config, ws=ws, dry_run=dry_run, yes=yes, adopt_empty=adopt_empty,
+        )
+    finally:
+        if lock is not None:
+            lock.release()
+
+
+def _run_migrate_command(action, *, config, ws, dry_run, yes, adopt_empty) -> int:
+    from echo_agent.cli.prompt import PromptAborted, prompt_yes_no
 
     def confirm(question: str) -> bool:
         """Ask for confirmation, treating an abort exactly like a decline.
@@ -235,7 +256,6 @@ def run_migrate_command(
         except PromptAborted:
             return False
 
-    config, ws = load_config_and_workspace(config_path, workspace)
     memory_dir = ws / config.storage.memory_dir
     bindings = set(config.memory.principal_bindings)
     owner_key = config.memory.owner_key

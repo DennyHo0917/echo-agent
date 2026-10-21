@@ -1,65 +1,56 @@
 # Security Hardening
 
-A checklist-driven guide to securing Echo Agent deployments.
+For a server, configure identity, API authorization and execution policy separately. A healthy process alone does not establish a secure or model-ready task path.
 
----
-
-## Security Profiles
-
-Echo Agent provides three built-in security profiles:
-
-| Profile | Use Case | Default Tool Access |
-|---------|----------|-------------------|
-| `personal_cli` | Local development | Most tools allowed |
-| `daemon` | Background service | Blocks exec, process, skill_install |
-| `public_gateway` | Public-facing | Blocks all high-risk tools |
+## Authentication and exposure
 
 ```yaml
 security:
-  profile: daemon  # or personal_cli, public_gateway
+  profile: daemon
+
+tools:
+  profile: coding
+  restrict_to_workspace: true
+
+gateway:
+  host: 127.0.0.1
+  auth:
+    mode: allowlist  # open | allowlist | pairing
+    allowed_users: ["cli:local"]
+    allowed_hosts: ["localhost", "127.0.0.1"]
+
+permissions:
+  approval:
+    mode: manual  # manual | smart | off
+    cli_auto_approve: false
+    unattended_policy: deny
 ```
 
-## Hardening Checklist
+Set strong, distinct API/admin tokens through a protected configuration file or JSON environment overrides:
 
-### Network
+```bash
+export ECHO_AGENT_GATEWAY__AUTH__API_TOKENS='["replace-with-random-read-token"]'
+export ECHO_AGENT_GATEWAY__AUTH__ADMIN_TOKENS='["replace-with-random-admin-token"]'
+```
 
-- [ ] Gateway binds to `127.0.0.1` (default)
-- [ ] Use reverse proxy with TLS for external access
-- [ ] Set `gateway.auth.allowedOrigins` to your domain
-- [ ] Set `gateway.auth.allowedHosts` for DNS rebinding protection
-- [ ] Review `gateway.mediaAllowPrivateAddresses: false`
+`auth.mode` controls platform/user allowlist/pairing; configured token checks remain independent, including in `open`. Read tokens do not replace admin tokens. `admin_users` is not a bypass for HTTP management-token guards. Pairing authorizes a platform/user pair and does not issue an API token.
 
-### Authentication
+Keep the default loopback binding or use SSH forwarding. External exposure needs TLS termination and explicit Host/Origin configuration. A reverse proxy's loopback peer address is not the final user's identity. See [Gateway authentication](../integrations/gateway/authentication.en.md) and [reverse proxy](../integrations/gateway/reverse-proxy.en.md).
 
-- [ ] Set `gateway.auth.mode: token`
-- [ ] Configure strong `api_tokens` and `admin_tokens`
-- [ ] Use separate admin tokens for Dashboard management
-- [ ] Review `gateway.auth.allowedUsers` for user restriction
+## Tool and approval policy
 
-### Tool Permissions
+Use the [security profile matrix](../reference/security-profile-matrix.en.md) for the exact allow/deny sets. `daemon` and `public_gateway` deny skill script execution and MCP calls by default as well as process execution. Explicitly allowing a tool does not remove its execution-time path, guard or approval checks. `auto_deny` wins over prior approvals, trusted channels and `mode: off`.
 
-- [ ] Set appropriate `tools.profile`
-- [ ] Review `permissions.approval.mode` (auto/ask/deny)
-- [ ] Restrict file system paths
-- [ ] Disable unnecessary execution backends
+Unattended runs must converge without relying on a desktop. Authorize only the intended Cron content/target; DANGEROUS operations cannot self-authorize. Keep a supported server CLI attach available for approval and clarification. Smart Approval rejects unavailable, truncated or filtered judgments.
 
-### Credentials
+Shell pattern checks and the copied-workdir `sandbox` backend are not OS isolation. Python plugins are trusted in-process code. A deployment requiring OS boundaries must enforce them in its selected container/remote execution environment. Network policy filters tool capabilities; it is not a firewall for arbitrary shell/SDK traffic.
 
-- [ ] API keys via environment variables, not config files
-- [ ] Enable credential encryption if supported
-- [ ] Review config file permissions (600)
+## Files, credentials and recovery
 
-### Monitoring
+Protect workspace directories with `0700`, configuration/secrets with `0600`, and keep credentials out of version control and command-line arguments. CredentialManager requires encryption by default. Its key may be supplied through the configured environment variable or persisted in `.credential_key`; preserve that matching key in backups. YAML secrets are not automatically encrypted by CredentialManager.
 
-- [ ] Enable audit logging
-- [ ] Monitor failed auth attempts (lockout after 5 failures)
-- [ ] Set up cost budget alerts
-- [ ] Regular review of Gateway logs
+Back up SQLite consistently with memory files, source documents, skills, configuration and keys. File checkpoints do not include all Runtime state. See [backup and restore](backup-restore.en.md).
 
-## Common Mistakes
+## Monitoring
 
-!!! danger
-    - Running Gateway on `0.0.0.0` without authentication
-    - Using `personal_cli` profile for public-facing deployments
-    - Storing API keys in version-controlled config files
-    - Enabling `shell` tool in public gateway mode
+Review authentication and tool audit failures, readiness, task terminal states and delivery recovery. The five-failure lockout applies to pairing verification, not every invalid API token. Cost limits need `cost.enabled` and a nonzero budget. Set network-level ingress limits and alerts in the deployment environment when required; Dashboard does not configure a general resource-alert engine.

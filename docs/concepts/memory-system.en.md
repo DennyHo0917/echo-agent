@@ -39,7 +39,7 @@ class Episode:
     importance: float         # 0-1 importance score
 ```
 
-Retrieval: semantic search via embeddings, with optional filtering by entity and time range.
+Retrieval uses embeddings with keyword fallback. `search_episodes` accepts query, session_key and limit; entity/time metadata does not imply public filter parameters.
 
 ### SEMANTIC Tier
 
@@ -51,7 +51,7 @@ Contains two categories of entries:
 1. **Superseded entries**: `superseded_by` field is set, pointing to a newer version
 2. **Low-activity entries**: effective_importance below the archive threshold
 
-Archived entries remain retrievable (with reduced weight) and support version tracing.
+Archived entries are restricted to administration/maintenance and superseded entries to administration. Ordinary tools, retrieval and snapshots do not recall them at a reduced weight; version relationships remain available for inspection.
 
 ```mermaid
 graph TD
@@ -342,7 +342,7 @@ class Contradiction:
 
 ## Consolidation (Sleep-Time Pipeline)
 
-Consolidation is the memory system's "sleep period" processing flow, analogous to memory consolidation during human sleep. It triggers at session end or during system idle periods:
+Consolidation is the memory system's "sleep period" processing flow, analogous to memory consolidation during human sleep. It is queued after a non-evaluation reply when the unconsolidated-message threshold is met:
 
 ### Sleep-Time Pipeline Steps
 
@@ -370,9 +370,9 @@ Consolidation is the memory system's "sleep period" processing flow, analogous t
 
 ### Trigger Conditions
 
-- Automatically triggered on normal session termination
-- Triggered when system idle time exceeds configured threshold
-- Can be manually triggered via management interface
+- ResponseStage checks `should_consolidate(message_count, last_consolidated)` after a reply
+- The configured threshold schedules work; `sleep_consolidation` enables extra stages within that job
+- There is no separate idle timer or generic manual-consolidation management API
 
 Consolidation runs asynchronously and never blocks the reply: at session end the work is handed to the background task scheduler rather than executed on the request path.
 

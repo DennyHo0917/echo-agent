@@ -84,7 +84,7 @@
 | `openai` | OpenAI / compatible endpoints | openai, httpx[socks] |
 | `anthropic` | Anthropic Claude | anthropic, httpx[socks] |
 | `bedrock` | AWS Bedrock | anthropic, boto3 |
-| `gemini` | Google Gemini | google-generativeai |
+| `gemini` | Google Gemini | google-genai |
 | `allproviders` | All model providers | All of the above |
 | `vector` | Vector search | faiss-cpu |
 | `browser` | Browser automation | playwright |

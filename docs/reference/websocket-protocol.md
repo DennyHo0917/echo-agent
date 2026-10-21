@@ -135,7 +135,7 @@ Agent 的输出统一使用 `message` 帧。流式片段和最终消息通过 `i
 
 ## Dashboard WebSocket
 
-Dashboard 连接 `/ws/dashboard` 后同样必须在 5 秒内发送认证帧。该端点当前只从帧中读取令牌：
+Dashboard 连接 `/ws/dashboard` 后必须在 10 秒内发送认证帧（绝对期限，发送无效帧不会续期）。该端点当前只从帧中读取令牌：
 
 ```json
 {"type": "auth", "token": "your-api-token"}
@@ -157,7 +157,9 @@ Dashboard 连接 `/ws/dashboard` 后同样必须在 5 秒内发送认证帧。�
 {"type": "unsubscribe", "channels": ["cron"]}
 ```
 
-目前 `tasks` 和 `cron` 已接入实时事件源。`sessions`、`memory`、`skills`、`channels`、`logs`、`analytics`、`knowledge` 是保留的订阅名，服务端暂未为它们接入事件源。未知通道返回 `subscribe_error`。
+`tasks`、`cron`、`sessions`、`memory`、`skills`、`channels`、`logs`、`analytics`、`knowledge` 均已接入事件源。`sessions` 含会话/回合全文，只接受 admin 订阅；普通 API 令牌收到的 `memory` 刷新事件仅含 `{"changed":true}`，不含主体或条目标识。未知或无权限通道返回 `subscribe_error`，分别列在 `unknown`/`forbidden`。同一连接认证成功后不能切换身份，应重新建立连接。
+
+浏览器即使不发送 `Sec-Fetch-Site`，只要 Origin 与 Host 同源且 Host 通过部署白名单也可连接；跨端口来源仍会被拒绝。`/meta` 的 `ws_path` 是 Dashboard WS，`interactive_ws_path` 是可配置的交互会话 WS。
 
 推送帧采用统一包装：
 

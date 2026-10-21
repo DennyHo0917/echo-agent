@@ -100,7 +100,7 @@ class LaunchdBackend:
             stderr = (result.stderr or "").strip()
             print(f"launchctl bootstrap failed ({result.returncode}): {stderr}")
             raise SystemExit(result.returncode)
-        run(["launchctl", "kickstart", self._domain_target()], check=False)
+        run(["launchctl", "kickstart", self._domain_target()])
         print("Gateway service started.")
         print(f"  Logs: {log_file()}")
 
@@ -116,7 +116,7 @@ class LaunchdBackend:
 
     def restart(self) -> None:
         if self.is_running():
-            run(["launchctl", "kickstart", "-k", self._domain_target()], check=False)
+            run(["launchctl", "kickstart", "-k", self._domain_target()])
             print("Gateway service restarted.")
         else:
             self.start()

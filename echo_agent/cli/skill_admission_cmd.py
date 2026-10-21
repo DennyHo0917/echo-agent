@@ -42,24 +42,30 @@ def run_skill_command(
 
 
 async def _build_admission(config_path, workspace):
-    from echo_agent.app import bootstrap as _bootstrap
+    from echo_agent.app import AppRuntime, bootstrap as _bootstrap
     from echo_agent.evolution.store import TrajectoryStore
     from echo_agent.skills.admission import SkillAdmission
 
     overrides = {"workspace": workspace} if workspace else None
     ctx = await _bootstrap(config_path=config_path, overrides=overrides)
-    cstore = TrajectoryStore(ctx.storage)
-    await cstore.init_schema()
-    adm = SkillAdmission(
-        skill_store=ctx.agent.skill_store,
-        candidate_store=cstore,
-        policy=ctx.config.skills.admission_policy,
-        auto_write_risk=ctx.config.skills.auto_write_risk,
-    )
-    return ctx, adm
+    try:
+        cstore = TrajectoryStore(ctx.storage)
+        await cstore.init_schema()
+        adm = SkillAdmission(
+            skill_store=ctx.agent.skill_store,
+            candidate_store=cstore,
+            policy=ctx.config.skills.admission_policy,
+            auto_write_risk=ctx.config.skills.auto_write_risk,
+        )
+        return ctx, adm
+    except BaseException:
+        await AppRuntime(ctx).stop()
+        raise
 
 
 async def _list_staged(config_path, workspace) -> int:
+    from echo_agent.app import AppRuntime
+
     ctx, adm = await _build_admission(config_path, workspace)
     try:
         staged = await adm.list_staged(limit=200)
@@ -71,10 +77,12 @@ async def _list_staged(config_path, workspace) -> int:
             print(f"{c.id:<22} {c.operation:<8} {c.risk:<6} {c.skill_name:<24} {c.source}")
         return 0
     finally:
-        await ctx.storage.close()
+        await AppRuntime(ctx).stop()
 
 
 async def _decide(config_path, workspace, candidate_id, *, approve: bool, reason: str) -> int:
+    from echo_agent.app import AppRuntime
+
     ctx, adm = await _build_admission(config_path, workspace)
     try:
         res = await (adm.approve(candidate_id) if approve else adm.reject(candidate_id, reason))
@@ -85,4 +93,4 @@ async def _decide(config_path, workspace, candidate_id, *, approve: bool, reason
             return 0 if res.outcome == "written" else 1
         return 0
     finally:
-        await ctx.storage.close()
+        await AppRuntime(ctx).stop()

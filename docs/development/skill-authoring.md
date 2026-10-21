@@ -23,7 +23,7 @@ skills/
 
 每个 Skill 由一个 `SKILL.md` 文件定义，包含 YAML frontmatter 和 Markdown 正文：
 
-```markdown
+````markdown
 ---
 name: calculator
 description: "Math calculations, unit conversions, date/time arithmetic, and currency rates. Python-powered, no API needed for math."
@@ -39,20 +39,20 @@ Math, units, dates, and currency conversion.
 
 ## Math Expressions
 
-Safe evaluation via Python:
+Use the bundled calculator, which validates supported AST nodes before evaluating:
 
 ```python
-import ast
-result = eval(compile(ast.parse("2**10 + 3.14 * 2", mode='eval'), '', 'eval'))
+from subprocess import run
+run(["python3", "scripts/calc.py", "eval", "2**10 + 3.14 * 2"], check=True)
 ```
 
 ## Script
 
 ```bash
-python3 scripts/calc.py "2**32 - 1"
+python3 scripts/calc.py eval "2**32 - 1"
 python3 scripts/calc.py convert 100 km mi
 ```
-```
+````
 
 ## Frontmatter 字段
 
@@ -62,9 +62,9 @@ python3 scripts/calc.py convert 100 km mi
 | `description` | 是 | 功能描述（Agent 据此判断何时使用） |
 | `version` | 否 | 语义化版本号 |
 | `metadata.echo.tags` | 否 | 分类标签（用于搜索和过滤） |
-| `metadata.echo.dependencies` | 否 | Python 包依赖列表 |
-| `metadata.echo.requires_env` | 否 | 需要的环境变量 |
-| `metadata.echo.risk_level` | 否 | 风险等级：`read` / `write` / `exec` |
+| `metadata.echo.requires.pip` | 否 | Python 包依赖列表 |
+| `metadata.echo.requires.env` | 否 | 需要的环境变量 |
+| `metadata.echo.risk_level (说明性元数据)` | 否 | 风险等级：`read` / `write` / `exec` |
 
 ## 编写原则
 
@@ -102,7 +102,7 @@ Skill 可以：
 
 ## 完整示例：Web Search Skill
 
-```markdown
+````markdown
 ---
 name: web-search
 description: "Search the web for current information, news, documentation, and answers. Uses DuckDuckGo, no API key required."
@@ -110,7 +110,8 @@ version: 1.0.0
 metadata:
   echo:
     tags: [Search, Web, News, Research]
-    dependencies: [duckduckgo_search]
+    requires:
+      pip: [ddgs]
     risk_level: read
 ---
 
@@ -121,7 +122,7 @@ Search the internet for up-to-date information.
 ## Basic Search
 
 ```python
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 with DDGS() as ddgs:
     results = list(ddgs.text("query here", max_results=5))
@@ -146,7 +147,7 @@ with DDGS() as ddgs:
 - Combine multiple searches for comprehensive coverage
 - Verify facts from multiple sources
 - Include date constraints for time-sensitive queries
-```
+````
 
 ## 带依赖的 Skill
 
@@ -155,8 +156,9 @@ with DDGS() as ddgs:
 ```yaml
 metadata:
   echo:
-    dependencies: [duckduckgo_search, trafilatura]
-    requires_env: []  # 无需 API Key
+    requires:
+      pip: [ddgs, trafilatura]
+      env: []  # 无需 API Key
 ```
 
 对应的 Python 包应在 `pyproject.toml` 的 `[project.optional-dependencies] skills` 中声明。

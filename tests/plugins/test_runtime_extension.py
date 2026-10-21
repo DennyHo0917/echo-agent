@@ -177,10 +177,16 @@ async def test_mcp_extension_policy_error_withdraws_old_tools_and_propagates(tmp
             await manager.discover_tools(registry)
         elif entry == "notification":
             await manager._on_notification("catalog", "notifications/tools/list_changed", {})
+            # The sole MCP reader must remain available to receive tools/list.
+            # Its owned refresh records policy faults for callers after completion.
+            await manager._refresh_tasks["catalog"]
+            manager.assert_extension_healthy("catalog")
         else:
             client.is_connected = False
             await manager._supervise_once("catalog")
     assert not registry.has("mcp_catalog_query")
+    with pytest.raises(RuntimeError, match="adapter policy rejected"):
+        manager.assert_extension_healthy()
     with pytest.raises(RuntimeError, match="adapter policy rejected"):
         manager.get_client("catalog")
 

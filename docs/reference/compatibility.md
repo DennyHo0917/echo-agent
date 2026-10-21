@@ -16,13 +16,27 @@ Gateway 使用 `aiohttp`，命令行使用 `argparse`。数据存储使用 SQLit
 |---|---|
 | `pydantic` | `pydantic>=2.0` |
 | `pydantic-settings` | `pydantic-settings>=2.0` |
+| `cryptography` | `cryptography>=41.0` |
+| `regex` | `regex>=2024.11.6` |
 | `pyyaml` | `pyyaml>=6.0` |
-| `loguru` | `loguru>=0.7` |
+| `loguru` | `loguru>=0.7.2,<0.8` |
 | `aiohttp` | `aiohttp>=3.9` |
 | `aiosqlite` | `aiosqlite>=0.20` |
 | `croniter` | `croniter>=1.4` |
 | `numpy` | `numpy>=1.24` |
-| `fastembed` | `fastembed>=0.6` |
+| `Pillow` | `Pillow>=13.0.0,<14` |
+| `huggingface-hub` | `huggingface-hub>=0.20,<2.0` |
+| `mmh3` | `mmh3>=4.1.0,<6.0.0` |
+| `numpy` | `numpy>=1.26; python_version == '3.12'` |
+| `numpy` | `numpy>=2.1.0; python_version == '3.13'` |
+| `numpy` | `numpy>=2.3.0; python_version >= '3.14'` |
+| `onnxruntime` | `onnxruntime>=1.17.0,!=1.20.0,!=1.24.0,!=1.24.1; python_version < '3.13'` |
+| `onnxruntime` | `onnxruntime>1.21.0,!=1.24.0,!=1.24.1; python_version == '3.13'` |
+| `onnxruntime` | `onnxruntime>=1.24.2; python_version >= '3.14'` |
+| `py-rust-stemmers` | `py-rust-stemmers>=0.1.0,<0.2` |
+| `requests` | `requests>=2.31,<3` |
+| `tokenizers` | `tokenizers>=0.15,<1.0` |
+| `tqdm` | `tqdm>=4.66,<5` |
 | `questionary` | `questionary>=2.0` |
 | `prompt-toolkit` | `prompt-toolkit>=3.0` |
 | `httpx` | `httpx>=0.23` |
@@ -57,3 +71,13 @@ Gateway 使用 `aiohttp`，命令行使用 `argparse`。数据存储使用 SQLit
 ## 升级与数据
 
 SQLite 表结构迁移在连接初始化时自动执行。`echo-agent migrate` 只处理 USER 记忆归属与旧 `MEMORY.*.md` 分片，不是数据库表结构迁移命令。`checkpoint restore` 不恢复数据库、会话、记忆或日志。跨版本回退应停止服务并恢复与目标版本匹配的完整备份。操作步骤见[升级与数据迁移](../operations/upgrade-migrations.md)。
+
+## 2026-10-21 服务端资格边界
+
+正式 wheel 已包含 Dashboard、fallback 页面、内置 skills 和默认配置；安装后运行 Gateway 不需要 Node/pnpm、Rust/Tauri 或根目录 client。只有从源码构建 Dashboard 才需要 Node（推荐 24 LTS）及锁定 pnpm 10.34.5；CI 覆盖 pnpm 10/11。Node 20 的已有构建兼容不表示仍受上游维护。
+
+Gemini extra 现使用 `google-genai>=2.32,<3`（2026-10-21 发布的 2.32.0 已做真实 SDK 序列化、流和工具返回验证）；仍使用原 `gemini`/`google` provider 名、key/env 与模型配置，SDK 不自动执行工具。`api_base` 是该 API 服务基础地址，图像输入支持 inline data URL；不替调用者抓取任意远程图像。Gemini signed content 只回传给对应 converter。没有进行真实 Google API 联调。
+
+FastEmbed 是随包提供的 `0.9.0+echo.1` 兼容副本，不再是 `fastembed>=0.6` 的浮动安装。Pillow 13 范围、来源/hash、许可与补丁见 `echo_agent/_vendor/fastembed/VENDOR.md`。PyMuPDF 2.0 的发行元数据错误已在干净 all 安装复现，暂限定 `<2`。cryptography 是默认凭据加密所需核心依赖；regex 是带执行期限的搜索所需核心依赖。
+
+MCP 明确支持 2024-11-05、2025-03-26、2025-06-18，未实现 2026-07-28 的无会话/逐请求协商模型。A2A 目前是入站 legacy `tasks/send/get/cancel` 子集，不宣称 A2A 1.x 完整一致性。具体升级依据、替代方案、回滚和实测边界见[服务端评审](../reviews/server-review-and-remediation.md)。

@@ -262,7 +262,7 @@ class InferenceStage:
                     session_key, question, options,
                     user_id=getattr(event, "sender_id", ""),
                     delivered=False,
-                    continuation={key: metadata[key] for key in ("task_id", "workflow_id")
+                    continuation={key: metadata[key] for key in ("task_id", "workflow_id", "task_attempt_id")
                                   if key in metadata},
                 )
                 event.metadata["_clarification"] = {
@@ -872,7 +872,7 @@ class InferenceStage:
             # post_llm_call hook
             if self._hook_registry and self._hook_registry.has_hooks("post_llm_call"):
                 response = await self._hook_registry.dispatch_modify(
-                    "post_llm_call", response, messages,
+                    "post_llm_call", response, messages, session_key=event.session_key,
                 )
 
             self._tracer.end_span(
@@ -1147,10 +1147,14 @@ class InferenceStage:
             # persisted session history, which stays provider-neutral.
             if getattr(response, "thinking_blocks", None):
                 assistant_msg["thinking_blocks"] = response.thinking_blocks
+            if getattr(response, "provider_content", None):
+                assistant_msg["provider_content"] = response.provider_content
             messages.append(assistant_msg)
 
             tool_call_fmts = [tc.to_openai_format() for tc in response.tool_calls]
-            session.add_message("assistant", response.content or "", tool_calls=tool_call_fmts)
+            session.add_message("assistant", response.content or "", tool_calls=tool_call_fmts,
+                                **({"provider_content": response.provider_content}
+                                   if getattr(response, "provider_content", None) else {}))
 
             terminal_denial = await self._execute_tool_batch(
                 ctx=ctx, response=response, messages=messages, session=session,

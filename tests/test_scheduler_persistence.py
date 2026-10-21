@@ -16,6 +16,16 @@ from echo_agent.scheduler.service import (
     TriggerKind,
     _now_ms,
 )
+from echo_agent.storage.errors import CorruptData
+
+
+@pytest.mark.parametrize("damaged", ['{"jobs":[', '{"jobs":[{"id":"ok"},null]}', '{"jobs":"invalid"}'])
+def test_corrupt_scheduler_state_is_never_replaced_by_an_empty_store(tmp_path, damaged):
+    store = tmp_path / "scheduler.json"
+    store.write_text(damaged, encoding="utf-8")
+    with pytest.raises(CorruptData):
+        Scheduler(store)
+    assert store.read_text(encoding="utf-8") == damaged
 
 
 # ── P0-4: atomic write ───────────────────────────────────────────────────────

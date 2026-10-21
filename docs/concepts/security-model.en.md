@@ -148,9 +148,9 @@ credentials:
   require_encryption: true
 ```
 
-- Channel tokens (Telegram/Discord/Slack, etc.) are stored encrypted
-- Encryption key is read from environment variable, never persisted to disk
-- With `require_encryption: true`, missing key causes startup refusal
+CredentialManager encrypts values in its credential store. Model/channel tokens written directly in YAML are not automatically moved into that store: use process environment variables or protect the configuration file with mode `0600`.
+
+The key comes from the configured environment variable, an existing `.credential_key`, or a newly generated `0600` key file. Preserve the matching key in backups and migrations. With `require_encryption: true`, unavailable encryption or an invalid/unavailable key fails initialization rather than falling back to plaintext.
 
 ## 9. Memory Write Security
 

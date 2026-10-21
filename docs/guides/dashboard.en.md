@@ -22,6 +22,8 @@ http://127.0.0.1:58123/
 
 The Dashboard is a single-page application mounted at the gateway root. Its port is `gateway.port` (`58123` by default; set it to `0` for a dynamically assigned port, which is written to `workspace/.echo-agent/gateway.json`). When the frontend bundle has not been built, that address falls back to the built-in playground page — run `echo-agent dashboard build` to produce the bundle.
 
+The simplified page is also available at `/playground`. It discovers API and interactive WS paths through `/meta`. Enter an existing API/admin token when authentication is enabled; the page sends it in headers or the WS auth frame, never in a URL or browser storage. Release wheels include the Dashboard and need no Node/pnpm at runtime; those tools are needed to build from source.
+
 ## Navigation Guide
 
 The left sidebar contains the main navigation with the following pages:
@@ -51,9 +53,9 @@ Displays the overall system health dashboard.
 **Key Features:**
 
 - Active session count
-- System resource usage (CPU, memory)
+- Memory entries, running tasks and interactive WS clients
 - Channel connection status
-- Recent events timeline
+- Event-driven refresh with polling as a reconnect backstop
 
 <!-- Screenshot placeholder: Overview page showing status cards and resource charts -->
 
@@ -65,8 +67,8 @@ View and manage all active and historical sessions.
 
 - View active session list and details
 - Browse historical session records
-- Manually terminate abnormal sessions
-- Filter sessions by channel and time range
+- Reset a conversation; page through history and inspect execution records
+- Search session identifiers
 
 <!-- Screenshot placeholder: Sessions list showing status, source channel, and duration -->
 
@@ -94,7 +96,7 @@ Manage installed skills and their configurations.
 - View installed skills list
 - Enable/disable individual skills
 - View skill trigger conditions and descriptions
-- Skill execution logs
+- Read skill content, files and dependency status, and install declared dependencies
 
 <!-- Screenshot placeholder: Skills page showing skill cards grid with toggle switches -->
 
@@ -146,8 +148,8 @@ View system logs in real time.
 
 - Real-time log streaming (via WebSocket)
 - Filter by level (DEBUG / INFO / WARN / ERROR)
-- Filter by module and time range
-- Log export
+- Search text and page through older records
+- Pause or resume live refresh
 
 <!-- Screenshot placeholder: Logs page showing log stream and level filter controls -->
 
@@ -157,27 +159,26 @@ View usage statistics and model invocation costs.
 
 **Key Features:**
 
-- Model invocation count and token consumption trends
-- Cost breakdown by model
+- Token consumption and daily cost trends
+- Total cost and channel attribution
 - Usage distribution by channel and skill
-- Custom time range reports
+- Today, last 7 days and last 30 days
 
 <!-- Screenshot placeholder: Analytics page showing line charts, pie charts, and cost summary table -->
 
 ### Config
 
-Manage runtime system parameters without restarting the service.
+Validate and save editable non-secret settings. An ordinary save does not mutate an already constructed Runtime.
 
 **Key Features:**
 
-- Edit model provider configuration (API keys, endpoints)
-- Adjust memory strategy parameters
-- Modify log levels
-- Manage environment variable overrides
-- Configuration change history and rollback
+- Edit language, logging/tracing, memory/knowledge switches and budgets
+- Inspect saved values and redacted running values under `_meta.running`
+- Restore pending state on refresh or re-login from server-side `_meta.pending_paths` and `_meta.restart_required`
 
-!!! warning "Caution"
-    Changes made on the Config page take effect immediately. Proceed carefully. It is recommended to make configuration changes during off-peak hours.
+Model credentials and gateway authentication remain read-only here; use the server configuration file or supported setup commands. Nested PATCHes merge leaves and cannot bypass secret restrictions. Unknown fields return 400. Saving uses atomic replacement; an invalid existing file returns 409 rather than being overwritten.
+
+Restart reloads the configuration file and environment overrides. Environment precedence may keep a running value different from the file. There is no configuration history/automatic rollback button: restore a backed-up file, validate it and restart. Channel lifecycle operations below are the supported live activation boundary.
 
 <!-- Screenshot placeholder: Config page showing configuration form and change history panel -->
 
@@ -187,10 +188,11 @@ Configure messaging channel connection parameters.
 
 **Key Features:**
 
-- Add/edit/delete channels
-- Configure channel authentication credentials
-- View channel connection status and health checks
-- Channel message throughput monitoring
+- View saved enablement, actual connection state and unapplied changes
+- Enable/disable, start/stop/restart configured channels; an explicit lifecycle operation loads that channel's saved configuration
+- Inspect failed or uncertain deliveries; check the destination chat before resuming sends or recording delivery
+
+Maintain channel credentials in the server configuration file; this page does not create accounts or edit credentials.
 
 <!-- Screenshot placeholder: Channels page showing channel list and connection status indicators -->
 
@@ -200,7 +202,7 @@ Configure messaging channel connection parameters.
 
 The Dashboard inherits the gateway's authentication; it has no authentication settings of its own. `gateway.host` defaults to `127.0.0.1`, so only the local machine is served.
 
-With no additional configuration (`gateway.auth.mode` at `allowlist` and an empty list), browser requests carrying a cross-site `Origin` are rejected, which means the Dashboard page cannot call the API in that state. To open browser access, set `gateway.auth.mode` to `open`, add the user to `gateway.auth.allowed_users`, or add the origin to `gateway.auth.allowed_origins`.
+Management APIs retain API/admin token scopes. Session/turn transcripts require admin scope, including the Dashboard WS `sessions` subscription. Read tokens receive memory invalidations without entry IDs or principal scopes for aggregate refreshes. Platform/user allowlists separately authorize incoming messages. Same-origin browsers and same-origin WS handshakes without `Sec-Fetch-Site` work; cross-origin and unexpected Host requests are rejected. Configure `allowed_hosts` for the reverse proxy and explicitly allow a development frontend's origin only when needed.
 
 !!! warning "Before exposing it publicly"
     Configure authentication and TLS termination at a reverse proxy before changing `gateway.host` to a non-loopback address. See [gateway authentication](../integrations/gateway/authentication.md) and [security hardening](../operations/security-hardening.md).
@@ -210,6 +212,5 @@ With no additional configuration (`gateway.auth.mode` at `allowlist` and an empt
 Through the Overview and Analytics pages, you can:
 
 - Monitor system health status in real time
-- Configure resource usage alert thresholds
 - Monitor model cost budgets
-- Detect abnormal sessions automatically
+- Investigate failures using session/turn state and logs; the page does not configure general resource alerts

@@ -99,7 +99,7 @@ class SkillRunTool(Tool):
         self._config = config
 
     def execution_mode(self, params: dict[str, Any]) -> str:
-        return "exec"
+        return "side_effect"
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         name = params["name"]

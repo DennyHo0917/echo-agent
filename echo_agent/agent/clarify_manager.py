@@ -69,9 +69,12 @@ class ClarifyManager:
         return req
 
     def resolve(self, clarify_id: str, answer: str) -> bool:
-        req = self._pending.pop(clarify_id, None)
-        if req is None:
+        req = self._pending.get(clarify_id)
+        if req is None or req.answer is not None or req.interrupted:
             return False
+        # The prompt delivery itself awaits I/O. An answer can arrive before
+        # the tool enters wait_for_answer; retain it until that owner consumes
+        # it rather than turning a fast response into an empty answer.
         req.answer = answer
         waiter = self._waiters.get(clarify_id)
         if waiter is not None:
@@ -82,6 +85,9 @@ class ClarifyManager:
         req = self._pending.get(clarify_id)
         if req is None:
             return "", False
+        if req.answer is not None:
+            self._pending.pop(clarify_id, None)
+            return req.answer, req.interrupted
         # cancel_session may have interrupted this request before the caller
         # started waiting; return the sentinel immediately instead of blocking
         # on a waiter that will never be set again.
@@ -99,7 +105,7 @@ class ClarifyManager:
     def cancel_session(self, session_key: str) -> int:
         count = 0
         for cid, req in list(self._pending.items()):
-            if req.session_key == session_key:
+            if req.session_key == session_key and req.answer is None:
                 req.interrupted = True
                 req.answer = ""
                 count += 1
@@ -109,7 +115,8 @@ class ClarifyManager:
         return count
 
     def get(self, clarify_id: str) -> ClarifyRequest | None:
-        return self._pending.get(clarify_id)
+        req = self._pending.get(clarify_id)
+        return req if req is not None and req.answer is None else None
 
     # ---- IM (non-blocking) follow-up registry, keyed by session_key --------
 

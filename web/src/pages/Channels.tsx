@@ -13,6 +13,9 @@ interface Channel {
   name: string;
   enabled: boolean;
   running: boolean;
+  runtime_enabled?: boolean;
+  restart_required?: boolean;
+  enabled_managed?: boolean;
   allow_from_count?: number;
   group_policy?: string;
 }
@@ -38,13 +41,6 @@ export function Channels() {
 
   const toggleEnabled = async (channel: Channel) => {
     setInflight(`${channel.name}:toggle`);
-    if (channel.running && channel.enabled) {
-      const stopped = await runMutation(
-        () => apiFetch(`/channels/${channel.name}/stop`, { method: "POST" }),
-        { error: t("actionFailed.stop") },
-      );
-      if (!stopped) { setInflight(null); return; }
-    }
     const ok = await runMutation(
       () => apiFetch("/config", {
         method: "PATCH",
@@ -52,10 +48,11 @@ export function Channels() {
       }),
       { success: channel.enabled ? t("disabledSuccess") : t("enabledSuccess"), error: t("toggleFailed") },
     );
-    if (ok && !channel.enabled) {
+    if (ok) {
+      const action = channel.enabled ? "stop" : "start";
       await runMutation(
-        () => apiFetch(`/channels/${channel.name}/start`, { method: "POST" }),
-        { error: t("actionFailed.start") },
+        () => apiFetch(`/channels/${channel.name}/${action}`, { method: "POST" }),
+        { error: t(`actionFailed.${action}`) },
       );
     }
     setInflight(null); refetch();
@@ -90,6 +87,8 @@ export function Channels() {
                 <span className={`w-3 h-3 rounded-full ${ch.running ? "bg-green-500" : ch.enabled ? "bg-yellow-400" : "bg-gray-300"}`} />
                 <div className="flex-1">
                   <div className="font-medium text-sm">{ch.name}</div>
+                  {ch.restart_required && <div className="text-xs text-amber-700">{t("savedPending")}</div>}
+                  {ch.enabled_managed && <div className="text-xs text-gray-500">{t("managedEnabled")}</div>}
                   <div className="text-xs text-gray-500 flex gap-3">
                     <span>{ch.enabled ? t("common:enabled") : t("common:disabled")}</span>
                     {ch.group_policy && <span>{t("groupPolicy", { policy: ch.group_policy })}</span>}
@@ -102,6 +101,12 @@ export function Channels() {
                   {ch.running ? t("common:online") : ch.enabled ? t("notConnected") : t("common:offline")}
                 </span>
                 <div className="flex items-center gap-1">
+                  {ch.running && <button onClick={() => lifecycle(ch, "stop")}
+                    disabled={!canWrite || inflight !== null}
+                    aria-label={t("stopAria", { name: ch.name })} title={t("stopHint")}
+                    className="p-1.5 rounded text-red-600 hover:bg-red-50 disabled:opacity-40">
+                    <Power size={15} />
+                  </button>}
                   {ch.enabled && <button onClick={() => lifecycle(ch, ch.running ? "restart" : "start")}
                     disabled={!canWrite || inflight !== null}
                     aria-label={t(ch.running ? "restartAria" : "startAria", { name: ch.name })}
@@ -109,7 +114,7 @@ export function Channels() {
                     {ch.running ? <RotateCw size={15} className={inflight === `${ch.name}:restart` ? "animate-spin" : ""} /> : <Power size={15} />}
                   </button>}
                   <button role="switch" aria-checked={ch.enabled} onClick={() => toggleEnabled(ch)}
-                    disabled={!canWrite || inflight !== null}
+                    disabled={!canWrite || inflight !== null || ch.enabled_managed}
                     aria-label={t(ch.enabled ? "disableAria" : "enableAria", { name: ch.name })}
                     className={`w-10 h-5 rounded-full transition-colors disabled:opacity-40 ${ch.enabled ? "bg-blue-600" : "bg-gray-300"}`}>
                     <div className={`w-4 h-4 bg-white rounded-full shadow transition-transform ${ch.enabled ? "translate-x-5" : "translate-x-0.5"}`} />

@@ -114,6 +114,8 @@ risk = max(static_risk, declared_risk, key=severity)
 
 工具调用经过 `ApprovalGate.check()` 的多步决策：
 
+`permissions.approval.auto_deny` 是优先拒绝规则：即使工具属于只读/写入等级、同时出现在 `auto_approve`、已有历史批准、来自 CLI/受信通道，或 `mode: off`，仍会拒绝。修改配置并重启 Runtime 后生效。
+
 ```
 ┌─ Step 1: 静态安全守卫（GuardDecision）
 │   ├─ deny → 直接拒绝（不可逆的破坏性命令）
@@ -144,7 +146,8 @@ risk = max(static_risk, declared_risk, key=severity)
 ├─ Step 10: Smart Approval（LLM 预筛）
 │   ├─ approve → 放行
 │   ├─ deny → 拒绝
-│   └─ escalate/unavailable → 继续
+│   ├─ escalate → 继续人工审批
+│   └─ unavailable → 拒绝并提示审批模型不可用
 │
 └─ Step 11: 人工审批流程
     ├─ 嵌套调用 → 直接拒绝（worker 无法回答审批提示）
@@ -198,6 +201,7 @@ class ToolExecutionContext:
 | 用户交互式会话 | `False` | `False` | 走标准审批流程 |
 | 定时任务触发（已授权） | `True` | `True` | WRITE/EXEC 自动放行 |
 | 定时任务触发（未授权） | `True` | `False` | 按 `unattended_policy` |
+| 主动巡检（包括投递到 IM 通道） | `True` | `False` | 按 `unattended_policy`，投递目标不授予执行权限 |
 | 子代理 worker | 继承父级 | 继承父级 | 不可独立提升权限 |
 
 !!! warning "DANGEROUS 工具在无人值守下始终拒绝"
@@ -237,8 +241,8 @@ tools:
 | 策略 | 额外拦截 | 适用场景 |
 |------|----------|----------|
 | `personal_cli` | 无额外限制 | 本地开发/个人使用 |
-| `daemon` | 拦截 exec/execute_code/process/skill_install | 后台守护进程 |
-| `public_gateway` | 拦截所有写入 + 执行 + 危险工具 | 面向公网的网关 |
+| `daemon` | 拦截 exec/execute_code/process/skill_install/skill_run 及 mcp.call | 后台守护进程 |
+| `public_gateway` | 按工具/能力拒绝执行与通用文件写入等；保留会话产物工具 | 面向公网的网关 |
 
 ### 网络策略
 
@@ -257,7 +261,7 @@ permissions:
     auto_approve: [exec]          # 免审批放行的工具列表
     trusted_channels: [telegram]  # 受信通道（EXEC 可放行，DANGEROUS 仍需审批）
     cli_auto_approve: true        # CLI 交互模式下 EXEC 自动放行
-    mode: "smart"                 # off | smart | strict
+    mode: "smart"                 # off | smart | manual
     unattended_policy: "deny"     # deny | allow_safe
     wait_timeout_seconds: 120     # 人工审批超时
     smart_model: ""               # Smart Approval 使用的模型
@@ -412,7 +416,7 @@ execution:
 - 破坏性 SQL（`DROP TABLE`、`TRUNCATE`）
 
 !!! warning "SSRF 防护"
-    `web_fetch` 工具在目标为内网地址（`127.0.0.1`、`10.*`、`192.168.*` 等）时会触发审批，防止 SSRF 攻击。
+    `web_fetch` 默认拒绝内网、回环与链路本地目标；人工批准并不替代 URL/逐跳地址校验。确需私网访问须由操作者显式配置相应策略。
 
 ---
 

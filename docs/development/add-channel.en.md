@@ -18,7 +18,7 @@ Message flow:
 ```
 User message → Channel.start() listening
              → Construct InboundEvent
-             → bus.publish(InboundEvent)
+             → bus.publish_inbound(InboundEvent)
              → AgentLoop processes
              → OutboundEvent
              → Channel.send(OutboundEvent) → User
@@ -67,6 +67,7 @@ import hashlib
 from typing import Any
 
 import aiohttp
+from aiohttp import web
 from loguru import logger
 
 from echo_agent.bus.events import InboundEvent, OutboundEvent, ContentBlock, ContentType
@@ -83,8 +84,8 @@ class LineChannel(BaseChannel):
 
     def __init__(self, config: Any, bus: MessageBus):
         super().__init__(config, bus)
-        self._token: str = config.line_channel_token or ""
-        self._secret: str = config.line_channel_secret or ""
+        self._token: str = config.channel_token or ""
+        self._secret: str = config.channel_secret or ""
         self._webhook_path: str = "/webhook/line"
         self._session: aiohttp.ClientSession | None = None
 
@@ -114,15 +115,18 @@ class LineChannel(BaseChannel):
         data = await request.json()
         for event in data.get("events", []):
             if event["type"] == "message" and event["message"]["type"] == "text":
-                inbound = InboundEvent(
-                    channel=self.name,
-                    chat_id=event["source"]["userId"],
-                    user_id=event["source"]["userId"],
-                    text=event["message"]["text"],
-                    message_id=event["message"]["id"],
-                    reply_token=event.get("replyToken", ""),
-                )
-                await self.bus.publish(inbound)
+                try:
+                    inbound = self._build_event(
+                        sender_id=event["source"]["userId"],
+                        chat_id=event["source"]["userId"],
+                        text=event["message"]["text"],
+                        metadata={"message_id": event["message"]["id"]},
+                    )
+                except PermissionError:
+                    continue
+                if not await self.bus.publish_inbound(inbound):
+                    return web.Response(status=503)
+
 
         return aiohttp.web.Response(status=200)
 
@@ -165,61 +169,28 @@ class LineChannel(BaseChannel):
         return hmac.compare_digest(signature, expected)
 ```
 
-## Step 2: Register with ChannelManager
+## Step 2: Register and configure
 
-Register in the channel mapping in `echo_agent/channels/manager.py`:
-
-```python
-from echo_agent.channels.line import LineChannel
-
-_CHANNEL_MAP: dict[str, type[BaseChannel]] = {
-    "cli": CliChannel,
-    "telegram": TelegramChannel,
-    "discord": DiscordChannel,
-    ...
-    "line": LineChannel,  # ← Add here
-}
-```
-
-## Step 3: Add Configuration
-
-Add channel configuration fields in `echo_agent/config/schema.py`:
+Register the class in `_CHANNEL_REGISTRY` in `channels/manager.py`. Add a matching nested field to `ChannelsConfig`; `start_all()` looks up that exact name. There is no automatic plugin-channel discovery or flat `line_enabled` configuration.
 
 ```python
-class ChannelsConfig(BaseModel):
-    ...
-    line_channel_token: str = ""
-    line_channel_secret: str = ""
-    line_enabled: bool = False
+class LineChannelConfig(_Base):
+    enabled: bool = False
+    channel_token: str = ""
+    channel_secret: str = ""
+    allow_from: list[str] = Field(default_factory=list)
+
+class ChannelsConfig(_Base):
+    line: LineChannelConfig = Field(default_factory=LineChannelConfig)
 ```
 
-## Step 4: Implement Optional Features
+This hypothetical adapter also needs its webhook route wired to an owned aiohttp server, validated configuration, diagnostics and tests before it can be used. `start()` creating a ClientSession alone does not register an inbound HTTP endpoint.
 
-### Message Editing (if platform supports it)
+## Step 3: Optional capabilities
 
-```python
-async def edit_message(self, chat_id: str, message_id: str, new_text: str) -> bool:
-    """Edit a previously sent message."""
-    # Implement the platform's message edit API
-    return True
-```
+Declare `supports_edit` only when implementing the actual `edit_message(chat_id, message_id, text, *, metadata=None, finalize=False) -> SendResult` contract. Reactions use `send_reaction`/`remove_reaction`, not `add_reaction`. File support is implemented inside `send(event)` and declared with `supports_files`; there is no BaseChannel `send_file` method to override.
 
-### File Sending
-
-```python
-async def send_file(self, chat_id: str, file_path: str, caption: str = "") -> SendResult:
-    """Send a file/image."""
-    # Implement file upload API
-    pass
-```
-
-### Reactions
-
-```python
-async def add_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
-    """Add an emoji reaction to a message."""
-    pass
-```
+Keep all allocated sessions, listeners, tasks and subprocesses under explicit ownership; `stop()` cancels and joins tasks before closing their connections. A failed start must release partially allocated resources.
 
 ## should_deliver Mechanism
 
@@ -256,8 +227,8 @@ from echo_agent.bus.events import OutboundEvent
 @pytest.fixture
 def channel():
     config = MagicMock()
-    config.line_channel_token = "test-token"
-    config.line_channel_secret = "test-secret"
+    config.channel_token = "test-token"
+    config.channel_secret = "test-secret"
     config.transcription_api_key = ""
     bus = MagicMock()
     return LineChannel(config, bus)
@@ -270,17 +241,21 @@ async def test_send_success(channel):
     mock_resp.status = 200
     channel._session.post = MagicMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_resp)))
 
-    event = OutboundEvent(chat_id="user123", text="Hello", is_final=True)
+    event = OutboundEvent.text_reply(channel="line", chat_id="user123", text="Hello")
     result = await channel.send(event)
     assert result.success
 
 
 @pytest.mark.asyncio
 async def test_send_skipped_non_final(channel):
-    event = OutboundEvent(chat_id="user123", text="thinking...", is_final=False)
+    event = OutboundEvent.text_reply(channel="line", chat_id="user123", text="thinking...", is_final=False)
     result = await channel.send(event)
     assert result.skipped  # supports_edit=False skips non-final
 ```
+
+## Adapter example boundaries
+
+Use `_build_event` for sender admission and internal-metadata stripping. Authenticated native ingress should use `_native_event_id` and declare `authenticated_ingress` so durable turns identify redelivery; acknowledge only after Runtime admission. Timeouts, server errors and missing receipts must use the existing delivery ledger's UNKNOWN/partial outcomes rather than blind replay. Keep confirmed multipart receipts. Stop cancels and joins owned tasks before closing connections.
 
 ## Checklist
 

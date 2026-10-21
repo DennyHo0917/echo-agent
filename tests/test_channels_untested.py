@@ -413,6 +413,7 @@ class TestFeishuChannel:
         request.read = AsyncMock(return_value=json.dumps({
             "type": "url_verification",
             "challenge": "test_challenge_123",
+            "token": "vtoken",
         }).encode())
 
         resp = await ch._webhook(request)
@@ -698,6 +699,7 @@ class TestWhatsAppChannel:
         mock_resp.__aexit__ = AsyncMock(return_value=False)
         ch._session.post = MagicMock(return_value=mock_resp)
 
+        mock_resp.json = AsyncMock(return_value={"messages": [{"id": "wamid.receipt"}]})
         event = OutboundEvent.text_reply(channel="whatsapp", chat_id="+1234567890", text="hi")
         result = await ch.send(event)
         assert result.success is True

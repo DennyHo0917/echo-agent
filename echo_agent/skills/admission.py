@@ -15,6 +15,7 @@ from loguru import logger
 
 from echo_agent.evolution.store import TrajectoryStore
 from echo_agent.evolution.types import SkillCandidate, _now_iso
+from echo_agent.evolution.validation import validate_candidate_identity
 from echo_agent.memory.store import scan_document_for_threats
 from echo_agent.skills.store import SkillStore
 
@@ -72,6 +73,9 @@ class SkillAdmission:
 
     def _apply(self, c: SkillCandidate) -> None:
         """Write the candidate to disk via SkillStore. Raises on store error."""
+        identity_error = validate_candidate_identity(c, self._skills)
+        if identity_error:
+            raise ValueError(identity_error)
         if c.operation in ("create",):
             err = self._skills.create_skill(c.skill_name, c.proposed_content)
         elif c.operation in ("patch",):

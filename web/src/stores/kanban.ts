@@ -82,7 +82,7 @@ export const VALID_TRANSITIONS: Record<string, string[]> = {
   queued: ["cancelled"],
   running: ["review", "blocked", "failed", "suspended", "cancelled"],
   blocked: ["queued", "cancelled"],
-  review: ["success", "queued"],
+  review: ["success", "queued", "cancelled"],
   suspended: ["queued", "cancelled"],
   failed: ["queued"],
   success: [],

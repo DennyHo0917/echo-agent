@@ -5,10 +5,6 @@ import argparse
 from echo_agent.dependencies.skill_require import require  # noqa: E402
 from datetime import date
 
-require("skill.web-search")
-
-from duckduckgo_search import DDGS  # noqa: E402
-
 try:
     import trafilatura
 except ImportError:
@@ -16,6 +12,9 @@ except ImportError:
 
 
 def search_multi(question: str, max_queries: int = 5, results_per: int = 3):
+    require("skill.web-search")
+    from duckduckgo_search import DDGS
+
     ddgs = DDGS()
     all_results = []
     queries = [question, f"{question} 2026", f"{question} best practices"]

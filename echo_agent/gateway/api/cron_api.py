@@ -7,7 +7,7 @@ from aiohttp import web
 from echo_agent.scheduler.authorization import compute_fingerprint
 from echo_agent.scheduler.authorization import grant as grant_authorization
 from echo_agent.scheduler.authorization import verify as verify_authorization
-from echo_agent.scheduler.service import ScheduledJob, TriggerKind
+from echo_agent.scheduler.service import JobStatus, ScheduledJob, TriggerKind
 
 if TYPE_CHECKING:
     from echo_agent.gateway.server import GatewayServer
@@ -258,9 +258,39 @@ class CronAPI:
             return guard
 
         job_id = request.match_info["id"]
-        success = await self._scheduler().trigger_job(job_id)
-        if not success:
+        scheduler = self._scheduler()
+        job = scheduler.get_job(job_id)
+        if job is None:
             return web.json_response({"error": "not found"}, status=404)
+        if job.active_run_id:
+            return web.json_response(
+                {"error": "job already has an active run; inspect run history before triggering again",
+                 "active_run_id": job.active_run_id}, status=409,
+            )
+        if not job.enabled or job.status != JobStatus.ACTIVE:
+            return web.json_response(
+                {"error": "job is disabled, paused or terminal; enable an active job before triggering"}, status=409,
+            )
+        success = await scheduler.trigger_job(job_id)
+        if not success:
+            # State can change while another trigger acquires the run lock.
+            if scheduler.get_job(job_id) is None:
+                return web.json_response({"error": "not found"}, status=404)
+            if job.last_status == "error" and not job.active_run_id:
+                return web.json_response(
+                    {"error": "job dispatch failed; inspect run history and scheduler storage before retrying",
+                     "code": "dispatch_failed"}, status=503,
+                )
+            capacity = getattr(scheduler, "_max_concurrent", None)
+            if isinstance(capacity, int) and sum(bool(item.active_run_id) for item in scheduler.list_jobs()) >= capacity:
+                return web.json_response(
+                    {"error": "scheduler execution capacity is full; wait for an active run to finish",
+                     "code": "capacity_exhausted"}, status=409,
+                )
+            return web.json_response(
+                {"error": "job was not dispatched; another run or scheduler lock is active; inspect run history",
+                 "code": "run_conflict"}, status=409,
+            )
         return web.json_response({"status": "triggered"})
 
     async def get_runs(self, request: web.Request) -> web.Response:
@@ -291,6 +321,7 @@ class CronAPI:
             "last_run_ms": job.last_run_ms,
             "next_run_ms": job.next_run_ms,
             "last_status": job.last_status,
+            "active_run_id": job.active_run_id,
             "payload": job.payload,
             "config_valid": _payload_has_content(job.payload),
             # Two separate facts: what grant exists (audit trail) and whether it

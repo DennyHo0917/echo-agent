@@ -42,7 +42,7 @@ Echo Agent 提供 35 个内置技能，分布在 10 个类别中。本文列出�
 | github-ops | 通过 `gh` CLI 执行 GitHub 操作 | 需要 `gh` 及其登录状态 |
 | plan | 将复杂任务分解为可执行的步骤计划 | — |
 | skill-creator | 辅助创建新的 SKILL.md 技能文件 | — |
-| workflow-chain | 将多个技能串联为自动化工作流 | — |
+| workflow-chain | 运行受审查的 JSON 命令阶段；技能组合由 Agent 组织 | — |
 
 !!! warning "code-runner 不是安全沙箱"
     该技能通过主机 Python 子进程执行代码。临时工作目录和模式检查不能阻止代码读取主机文件，也不构成可靠的网络隔离；不要用它执行不可信代码。
@@ -122,7 +122,7 @@ Echo Agent 提供 35 个内置技能，分布在 10 个类别中。本文列出�
 | weather | 查询指定城市的实时天气和未来预报 | — |
 
 !!! tip "daily-briefing 组合技能"
-    `daily-briefing` 会自动调用 `calendar`、`weather`、`reminder` 等技能来汇总信息。确保相关技能的环境变量已配置，可获得最完整的每日简报。
+    `daily-briefing` 的说明指导 Agent 组合天气、日历、提醒与新闻；附带脚本本身只提供日期、天气和可读取的本地提醒摘要，不自动调用其他技能或注册定时投递。完整组合由 Agent 明确执行，周期运行另用已授权 Cron。
 
 ---
 

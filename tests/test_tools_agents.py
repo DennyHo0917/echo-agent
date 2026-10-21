@@ -1011,6 +1011,9 @@ class TestWebFetchTool:
         mock_resp.url = "https://example.com"
         mock_resp.headers = {"content-type": "text/html"}
         mock_resp.text = AsyncMock(return_value="<html>Hello</html>")
+        async def chunks():
+            yield b"<html>Hello</html>"
+        mock_resp.content.iter_chunked = lambda _: chunks()
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -1034,6 +1037,9 @@ class TestWebFetchTool:
         mock_resp.url = "https://example.com/missing"
         mock_resp.headers = {"content-type": "text/html"}
         mock_resp.text = AsyncMock(return_value="Not found")
+        async def chunks():
+            yield b"Not found"
+        mock_resp.content.iter_chunked = lambda _: chunks()
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 

@@ -10,7 +10,17 @@ import base64
 import hashlib
 import struct
 
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+def require_crypto():
+    """Load the backend only when WeCom is used, with an operator diagnostic."""
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    except ImportError as exc:
+        raise RuntimeError(
+            "WeCom requires cryptography; install the echo-agent runtime dependencies "
+            "with 'python -m pip install --upgrade echo-agent'."
+        ) from exc
+    return Cipher, algorithms, modes
 
 
 def verify_signature(token: str, timestamp: str, nonce: str, *extra: str) -> str:
@@ -24,6 +34,7 @@ def decrypt_message(encoding_aes_key: str, corp_id: str, encrypt_b64: str) -> st
 
     Raises ValueError on padding/format errors or receive_id mismatch.
     """
+    Cipher, algorithms, modes = require_crypto()
     key = base64.b64decode(encoding_aes_key + "=")
     if len(key) != 32:
         raise ValueError("encoding_aes_key must decode to 32 bytes")

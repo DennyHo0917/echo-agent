@@ -1,37 +1,23 @@
 # 上下文压缩与 Spill
 
-LLM 的上下文窗口是有限的。当对话变长或工具输出过大时，需要主动管理上下文以避免截断。Echo Agent 通过两个互补机制解决此问题：**对话压缩**（缩减历史）和 **Spill 溢出**（落盘大输出）。
+模型上下文有上限。Echo Agent 用历史压缩缩短输入，用 Spill 保存过大的工具输出；长期记忆整合另有独立的提交边界。
 
-## 上下文窗口布局
+## 对话压缩
 
-```mermaid
-graph LR
-    subgraph 上下文窗口
-        SP[系统提示<br/>System Prompt]
-        MEM[记忆快照<br/>Memory Snapshot]
-        CH[压缩历史<br/>Compressed]
-        RM[近期消息<br/>Recent Messages]
-        RS[响应空间<br/>Response Budget]
-    end
-    SP --- MEM --- CH --- RM --- RS
-```
+ContextStage 读取 `Session.get_history()` 得到当前活动历史，在接近模型窗口时交给 ConversationCompressor。压缩在副本上裁剪较旧的媒体和工具内容，保留头部与近期消息，为中间部分生成摘要。只有完整可用的摘要才允许替换活动历史；摘要失败、截断、过滤或冷却时保留原文和媒体引用，不保存缺少中段内容的头尾拼接。
 
-各区段竞争有限的 token 预算。压缩与 Spill 的目标是在保留关键信息的前提下，为近期消息和响应留出足够空间。
+`last_consolidated` 属于长期记忆整合的已提交边界，压缩不会通过推进它来假装记忆已写入。历史边界会对齐 assistant 工具调用及结果，避免把孤立工具结果交给模型。
 
-## 1. 对话压缩 ConversationCompressor
+触发与预算由 `compression`、模型窗口及 `session.compression_window_cap` 控制。压缩失败保留数据，但不能保证超长输入仍能被模型接受；可恢复摘要模型后重试或显式开始新会话。
 
-### 触发时机
+## Spill 溢写
 
-当消息历史接近模型上下文窗口限制时自动触发（由 `compression_window()` 和 `resolve_context_window()` 计算阈值）。
+启用 `spill.enabled` 后，大工具输出写入工作区内专用的 `storage.spill_dir`，对话保留短预览和引用。用 `read_spill` 按 `offset`/`limit` 或 `pattern` 读取；跨会话引用仍须通过作用域检查，不能靠猜文件名访问其他会话数据。
 
-### 工作原理
+`spill.max_inline_chars` 控制内联阈值，`max_total_mb`、`retention_days` 和 `sweep_interval_hours` 控制容量与清理。引用不是永久备份；保留期限后的原文可能已清理。用户应交付的文档使用 artifact 工具链定稿及投递，避免只留下临时 Spill 引用。
 
-1. 从 `Session.last_consolidated` 指针之前的消息中选取待压缩部分
-2. 将旧消息合并为摘要，保留关键事实和决策
-3. 更新 `last_consolidated` 指针
-4. `get_history(max_messages=500)` 仅返回未压缩部分
+## 相关文档
 
-### 历史对齐规则
-
-- 永远不以孤立的 `tool` 结果消息开头（跳过其 paired assistant 已被压缩的 tool results）
-- 确保从 `user` 消息边界开始返回
+- [记忆系统](memory-system.md)
+- [任务与规划](../guides/tasks-planning.md)
+- [工具参考](../reference/tools.md)

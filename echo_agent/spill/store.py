@@ -29,6 +29,8 @@ class SpillStore:
     """把超长工具输出写进按会话分的私有目录。"""
 
     def __init__(self, root: Path):
+        if Path(root).is_symlink():
+            raise ValueError("spill root cannot be a symbolic link")
         self.root = Path(root).resolve()
 
     def session_dir(self, session_key: str) -> Path:
@@ -37,7 +39,13 @@ class SpillStore:
 
     def save(self, session_key: str, tool_name: str, content: str) -> Path:
         session_dir = self.session_dir(session_key)
+        if self.root.resolve() != self.root or self.root.is_symlink():
+            raise ValueError("spill root changed through a symbolic link")
+        if session_dir.is_symlink():
+            raise ValueError("spill session directory cannot be a symbolic link")
         session_dir.mkdir(parents=True, exist_ok=True)
+        if session_dir.resolve() != session_dir:
+            raise ValueError("spill session directory changed through a symbolic link")
         name = f"{secrets.token_hex(4)}-{_safe_segment(tool_name)}.txt"
         path = session_dir / name
         # 独占创建 + 仅属主可读：目标已存在（含符号链接）时直接失败,

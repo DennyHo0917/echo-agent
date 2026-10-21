@@ -176,7 +176,7 @@ These commands are sent to the agent runtime via the gateway. They require an ac
 
 ### /approve
 
-Approve a tool execution that is waiting for user confirmation. Tools in `ask` approval mode pause before executing and wait for explicit user approval.
+Approve a tool execution that is waiting for user confirmation. Tools requiring manual approval pause before executing and wait for explicit user approval.
 
 ```
 /approve abc123
@@ -240,7 +240,7 @@ number or enter free text instead of constructing this command manually.
 ## Workflow Tips
 
 !!! tip "Approval workflow"
-    When running with `tools.approval_mode: ask` for sensitive tools, keep `/approvals` handy to see what's queued. You can batch-deny with reasons to guide the agent toward safer alternatives.
+    When running with `permissions.approval.mode: manual` for sensitive tools, keep `/approvals` handy to see what's queued. You can batch-deny with reasons to guide the agent toward safer alternatives.
 
 !!! tip "Long sessions"
     Use `/save --format json` periodically to checkpoint your conversation. The JSON format preserves full metadata and can be reloaded for analysis.

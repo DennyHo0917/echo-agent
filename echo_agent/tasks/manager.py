@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
+from uuid import uuid4
 
 from loguru import logger
 
@@ -95,6 +96,16 @@ class TaskManager:
             task = await self.get(task_id)
             if not task:
                 raise ValueError(f"Task '{task_id}' not found")
+            expected_attempt = kwargs.get("expected_attempt_id", "")
+            expected_event = kwargs.get("expected_inbound_event_id", "")
+            if ((expected_attempt and task.attempt_id != expected_attempt)
+                    or (expected_event and task.metadata.get("_interrupt_event_id") != expected_event)):
+                raise ValueError("Task execution attempt is no longer current")
+            if task.status == TaskStatus.FAILED and new_status == TaskStatus.QUEUED:
+                # Generic API transitions must obey the same retry budget and
+                # clear the same attempt state as the dedicated retry endpoint.
+                return await self.retry(task_id, expected_attempt_id=expected_attempt,
+                                        expected_inbound_event_id=expected_event)
             allowed = VALID_TASK_TRANSITIONS.get(task.status, set())
             if new_status not in allowed:
                 raise ValueError(f"Invalid transition: {task.status.value} → {new_status.value}")
@@ -154,26 +165,111 @@ class TaskManager:
                 return task
         raise TaskCASConflict(f"Task '{task_id}' answer lost CAS after retries")
 
-    async def retry(self, task_id: str) -> TaskRecord:
-        task = await self.get(task_id)
-        if not task:
-            raise ValueError(f"Task '{task_id}' not found")
-        if task.status != TaskStatus.FAILED:
-            raise ValueError(f"Can only retry failed tasks, current: {task.status.value}")
-        if task.retry_count >= task.max_retries:
-            raise ValueError(f"Max retries ({task.max_retries}) exceeded")
-        task.retry_count += 1
-        task.error = ""
-        task.completed_at = ""
-        task.status = TaskStatus.QUEUED
-        task.updated_at = _now()
-        await self._storage.store_task(task.id, task.to_dict())
-        logger.info("Task {} retried (attempt {})", task_id, task.retry_count)
-        await self._emit("task_transitioned", task)
-        return task
+    @staticmethod
+    def matches_execution(task: TaskRecord, attempt_id: str = "", event_id: str = "") -> bool:
+        """Internal continuations must name a current attempt, including on CAS retry.
 
-    async def cancel(self, task_id: str) -> TaskRecord:
-        return await self.transition(task_id, TaskStatus.CANCELLED)
+        Unstamped legacy tasks remain readable/recoverable, but a legacy event
+        cannot modify a task that has since acquired an execution identity.
+        """
+        if task.attempt_id and not attempt_id and not event_id:
+            return False
+        if not task.attempt_id and not attempt_id:
+            return True
+        return ((not attempt_id or task.attempt_id == attempt_id)
+                and (not event_id or task.metadata.get("_interrupt_event_id") == event_id))
+
+    async def block_for_clarification(
+        self, task_id: str, question: str, *, attempt_id: str = "", event_id: str = "",
+        clarification: dict | None = None,
+    ) -> TaskRecord | None:
+        """Save question, execution identity and BLOCKED status in one CAS write."""
+        for _ in range(3):
+            task = await self.get(task_id)
+            if task is None or not self.matches_execution(task, attempt_id, event_id):
+                return None
+            if task.status != TaskStatus.RUNNING and not (
+                task.status == TaskStatus.BLOCKED and task.metadata.get("_awaiting_clarification")
+            ):
+                return None
+            expected = task.version
+            task.status = TaskStatus.BLOCKED
+            task.blocked_reason = question
+            task.error = ""
+            task.metadata["_awaiting_clarification"] = True
+            if clarification is not None:
+                task.metadata["_clarification"] = clarification
+                task.metadata.pop("_clarification_response", None)
+            task.updated_at = _now()
+            if await self._cas_persist(task, expected):
+                await self._emit("task_transitioned", task)
+                return task
+        raise TaskCASConflict(f"Task '{task_id}' clarification lost CAS after retries")
+
+    async def resume_after_clarification(
+        self, task_id: str, session_key: str, event_id: str, *, attempt_id: str = "",
+    ) -> TaskRecord | None:
+        """An IM answer replaces only the attempt whose question it answers."""
+        for _ in range(3):
+            task = await self.get(task_id)
+            if task is None or not self.matches_execution(task, attempt_id):
+                return None
+            if task.status == TaskStatus.RUNNING:
+                # Board answers have already been claimed by the dispatcher.
+                return task if task.metadata.get("_interrupt_event_id") == event_id else None
+            if task.status != TaskStatus.BLOCKED or not task.metadata.get("_awaiting_clarification"):
+                return None
+            expected = task.version
+            task.status = TaskStatus.RUNNING
+            task.blocked_reason = ""
+            task.metadata.pop("_awaiting_clarification", None)
+            task.metadata["_interrupt_event_id"] = event_id
+            task.session_id = session_key
+            task.attempt_id = uuid4().hex
+            task.owner_id = ""
+            task.lease_until_ms = None
+            task.updated_at = _now()
+            if await self._cas_persist(task, expected):
+                await self._emit("task_transitioned", task)
+                return task
+        raise TaskCASConflict(f"Task '{task_id}' clarification resume lost CAS after retries")
+
+    async def retry(self, task_id: str, *, expected_attempt_id: str = "",
+                    expected_inbound_event_id: str = "") -> TaskRecord:
+        for _ in range(3):
+            task = await self.get(task_id)
+            if not task:
+                raise ValueError(f"Task '{task_id}' not found")
+            if ((expected_attempt_id and task.attempt_id != expected_attempt_id)
+                    or (expected_inbound_event_id and task.metadata.get("_interrupt_event_id") != expected_inbound_event_id)):
+                raise ValueError("Task execution attempt is no longer current")
+            if task.status != TaskStatus.FAILED:
+                raise ValueError(f"Can only retry failed tasks, current: {task.status.value}")
+            if task.retry_count >= task.max_retries:
+                raise ValueError(f"Max retries ({task.max_retries}) exceeded")
+            expected_version = task.version
+            task.retry_count += 1
+            task.error = ""
+            task.result = ""
+            task.started_at = ""
+            task.completed_at = ""
+            task.owner_id = ""
+            task.attempt_id = ""
+            task.lease_until_ms = None
+            task.metadata.pop("_interrupt_event_id", None)
+            for key in ("_awaiting_clarification", "_clarification", "_clarification_response"):
+                task.metadata.pop(key, None)
+            task.blocked_reason = ""
+            task.status = TaskStatus.QUEUED
+            task.updated_at = _now()
+            if await self._cas_persist(task, expected_version):
+                logger.info("Task {} retried (attempt {})", task_id, task.retry_count)
+                await self._emit("task_transitioned", task)
+                return task
+        raise TaskCASConflict(f"Task '{task_id}' retry lost CAS after retries")
+
+    async def cancel(self, task_id: str, **execution: Any) -> TaskRecord:
+        return await self.transition(task_id, TaskStatus.CANCELLED, **execution)
 
     async def set_running_context(
         self, task_id: str, session_key: str, inbound_event_id: str,
@@ -186,20 +282,23 @@ class TaskManager:
         next. Best-effort: returns None if the task vanished, never raises.
         lease_ttl_ms == 0 keeps the old behaviour (no lease); a negative TTL
         stamps an already-expired lease (used to simulate a stale lease)."""
-        task = await self.get(task_id)
-        if not task:
-            return None
-        task.session_id = session_key
-        task.metadata = {**task.metadata, "_interrupt_event_id": inbound_event_id}
-        if owner_id:
-            task.owner_id = owner_id
-        if attempt_id:
-            task.attempt_id = attempt_id
-        if lease_ttl_ms != 0:
-            task.lease_until_ms = _now_ms() + lease_ttl_ms
-        task.updated_at = _now()
-        await self._storage.store_task(task.id, task.to_dict())
-        return task
+        for _ in range(3):
+            task = await self.get(task_id)
+            if not task or task.status != TaskStatus.RUNNING:
+                return None
+            expected_version = task.version
+            task.session_id = session_key
+            task.metadata = {**task.metadata, "_interrupt_event_id": inbound_event_id}
+            if owner_id:
+                task.owner_id = owner_id
+            if attempt_id:
+                task.attempt_id = attempt_id
+            if lease_ttl_ms != 0:
+                task.lease_until_ms = _now_ms() + lease_ttl_ms
+            task.updated_at = _now()
+            if await self._cas_persist(task, expected_version):
+                return task
+        return None
 
     async def renew_lease(self, task_id: str, owner_id: str, lease_ttl_ms: int) -> bool:
         """Extend a RUNNING task's lease if we still own it. Returns False when the
@@ -223,11 +322,8 @@ class TaskManager:
         previous instance (owner_id != current) or whose lease has expired. Called
         once at startup so a crash mid-turn no longer strands a task at RUNNING
         forever. Returns the reclaimed task ids."""
-        # NOTE: assumes a single active instance per workspace (enforced by the
-        # runtime instance-lock). requeue here is a plain write, not CAS; that is
-        # safe only because no concurrent instance shares this DB. If multi-instance
-        # shared-DB is ever supported, requeue_dispatch_failed must become CAS-guarded
-        # to avoid clobbering a peer's concurrent terminal write.
+        # The instance lock excludes other runtimes; CAS also protects this
+        # runtime's concurrent API cancellation and late terminal writeback.
         ref = now_ms if now_ms is not None else _now_ms()
         reclaimed: list[str] = []
         for task in await self.list_by_status(TaskStatus.RUNNING):
@@ -250,19 +346,27 @@ class TaskManager:
         path allowed to do it, and only for a task whose turn we know never ran.
         No-op if the task vanished or already left RUNNING (a real turn picked it
         up in the meantime). Never raises."""
-        task = await self.get(task_id)
-        if not task or task.status != TaskStatus.RUNNING:
-            return task
-        task.status = TaskStatus.QUEUED
-        task.started_at = ""
-        task.updated_at = _now()
-        await self._storage.store_task(task.id, task.to_dict())
-        logger.warning("Task {} re-queued after dispatch was rejected", task_id)
-        await self._emit("task_transitioned", task)
-        return task
+        for _ in range(3):
+            task = await self.get(task_id)
+            if not task or task.status != TaskStatus.RUNNING:
+                return task
+            expected_version = task.version
+            task.status = TaskStatus.QUEUED
+            task.started_at = ""
+            task.owner_id = ""
+            task.attempt_id = ""
+            task.lease_until_ms = None
+            task.metadata.pop("_interrupt_event_id", None)
+            task.updated_at = _now()
+            if await self._cas_persist(task, expected_version):
+                logger.warning("Task {} re-queued after dispatch was rejected", task_id)
+                await self._emit("task_transitioned", task)
+                return task
+        return await self.get(task_id)
 
     async def mark_terminal(
-        self, task_id: str, status: TaskStatus, *, result: str = "", error: str = ""
+        self, task_id: str, status: TaskStatus, *, result: str = "", error: str = "",
+        expected_attempt_id: str = "",
     ) -> TaskRecord | None:
         """Idempotently drive a dispatched task to a terminal state after its turn
         finishes. If the agent already completed it via the task tool (now in a
@@ -272,10 +376,13 @@ class TaskManager:
         task = await self.get(task_id)
         if not task or task.status in TERMINAL_TASK_STATUSES:
             return task
+        if expected_attempt_id and task.attempt_id != expected_attempt_id:
+            return task
         try:
             if status == TaskStatus.SUCCESS and task.status == TaskStatus.RUNNING:
-                await self.transition(task_id, TaskStatus.REVIEW)
-            return await self.transition(task_id, status, result=result, error=error)
+                await self.transition(task_id, TaskStatus.REVIEW, expected_attempt_id=expected_attempt_id)
+            return await self.transition(task_id, status, result=result, error=error,
+                                         expected_attempt_id=expected_attempt_id)
         except ValueError as e:
             logger.debug("Task {} terminal writeback skipped: {}", task_id, e)
             return await self.get(task_id)
@@ -295,23 +402,27 @@ class TaskManager:
             except Exception as e:
                 logger.debug("Terminal listener failed for task {}: {}", task_id, e)
 
-    async def update(self, task_id: str, **fields: Any) -> TaskRecord:
-        task = await self.get(task_id)
-        if not task:
-            raise ValueError(f"Task '{task_id}' not found")
-        for key in ("title", "description", "priority", "labels", "assignee", "blocked_reason", "review_summary"):
-            if key in fields:
-                setattr(task, key, fields[key])
-        if "metadata" in fields:
-            incoming = fields["metadata"]
-            if isinstance(incoming, dict):
+    async def update(self, task_id: str, *, expected_inbound_event_id: str = "", **fields: Any) -> TaskRecord:
+        for _ in range(3):
+            task = await self.get(task_id)
+            if not task:
+                raise ValueError(f"Task '{task_id}' not found")
+            if expected_inbound_event_id and task.metadata.get("_interrupt_event_id") != expected_inbound_event_id:
+                raise ValueError("Task execution attempt is no longer current")
+            expected_version = task.version
+            for key in ("title", "description", "priority", "labels", "assignee", "blocked_reason", "review_summary"):
+                if key in fields:
+                    setattr(task, key, fields[key])
+            if "metadata" in fields:
+                incoming = fields["metadata"]
+                if not isinstance(incoming, dict):
+                    raise ValueError("metadata must be an object")
                 task.metadata = {**task.metadata, **incoming}
-            else:
-                task.metadata = incoming
-        task.updated_at = _now()
-        await self._storage.store_task(task.id, task.to_dict())
-        await self._emit("task_updated", task)
-        return task
+            task.updated_at = _now()
+            if await self._cas_persist(task, expected_version):
+                await self._emit("task_updated", task)
+                return task
+        raise TaskCASConflict(f"Task '{task_id}' update lost CAS after retries")
 
     async def list_by_status(self, status: TaskStatus | None = None) -> list[TaskRecord]:
         rows = await self._storage.list_tasks(status=status.value if status else None)

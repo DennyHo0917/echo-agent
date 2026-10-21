@@ -73,11 +73,14 @@ async def test_record_run_outcome_emits_terminal_status(tmp_path: Path) -> None:
     async def sink(event_type: str, payload: dict[str, Any]) -> None:
         events.append((event_type, payload))
 
-    sched = Scheduler(store_path=tmp_path / "tasks.json")
-    sched.set_event_sink(sink)
-    sched.add_job(_job())
+    async def handler(job: ScheduledJob) -> str:
+        return "queued"
 
-    await sched.record_run_outcome("j1", "error", "boom")
+    sched = Scheduler(store_path=tmp_path / "tasks.json", on_job=handler)
+    job = sched.add_job(_job())
+    await sched._run_job(job)
+    sched.set_event_sink(sink)
+    await sched.record_run_outcome("j1", "error", "boom", run_id=job.active_run_id)
     await _flush(sched)
 
     assert len(events) == 1
@@ -194,10 +197,14 @@ class TestEmitIsOffTheCriticalPath:
 
         sched = Scheduler(store_path=tmp_path / "tasks.json")
         sched.set_event_sink(sink)
-        sched.add_job(_job())
+        job = sched.add_job(_job())
 
-        await sched.record_run_outcome("j1", "error", "boom")
-        await sched.record_run_outcome("j1", "completed")
+        # Exercise the event queue independently of run admission: real terminal
+        # writebacks require a matching queued occurrence and are immutable.
+        job.last_status = "error"
+        await sched._emit("cron_run", job)
+        job.last_status = "completed"
+        await sched._emit("cron_run", job)
         await _flush(sched)
 
         assert delivered == ["completed"]
@@ -217,10 +224,11 @@ class TestEmitIsOffTheCriticalPath:
 
         sched = Scheduler(store_path=tmp_path / "tasks.json")
         sched.set_event_sink(sink)
-        sched.add_job(_job())
+        job = sched.add_job(_job())
 
         for marker in ("e1", "e2", "e3", "e4", "e5"):
-            await sched.record_run_outcome("j1", "error", marker)
+            job.last_error = marker
+            await sched._emit("cron_run", job)
         assert sched._events_dropped > 0
 
         gate.set()
@@ -242,10 +250,11 @@ class TestEmitIsOffTheCriticalPath:
 
         sched = Scheduler(store_path=tmp_path / "tasks.json")
         sched.set_event_sink(sink)
-        sched.add_job(_job())
+        job = sched.add_job(_job())
         await sched.start()
 
-        await sched.record_run_outcome("j1", "completed")
+        job.last_status = "completed"
+        await sched._emit("cron_run", job)
         await sched.stop()
 
         assert delivered == ["completed"]
@@ -263,10 +272,11 @@ class TestEmitIsOffTheCriticalPath:
 
         sched = Scheduler(store_path=tmp_path / "tasks.json")
         sched.set_event_sink(sink)
-        sched.add_job(_job())
+        job = sched.add_job(_job())
         await sched.start()
 
-        await sched.record_run_outcome("j1", "completed")
+        job.last_status = "completed"
+        await sched._emit("cron_run", job)
         await asyncio.wait_for(sched.stop(), timeout=2)
 
         assert sched._event_task is None

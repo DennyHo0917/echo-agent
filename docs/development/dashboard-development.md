@@ -42,7 +42,6 @@ web/
 ├── package.json
 ├── pnpm-lock.yaml
 ├── vite.config.ts
-├── tailwind.config.ts
 └── tsconfig.json
 ```
 
@@ -60,7 +59,7 @@ pnpm preview      # 预览构建产物
 Dashboard 通过以下方式与 Gateway 通信：
 
 - HTTP REST API: `/api/v1/*`
-- WebSocket: `/ws` (dashboard 管理流)
+- WebSocket: `/ws/dashboard` (dashboard 管理流)
 
 开发时默认 proxy 到 `http://127.0.0.1:58123`。
 
@@ -72,7 +71,7 @@ Dashboard 通过以下方式与 Gateway 通信：
 echo_agent/_bundled/dashboard/index.html
 ```
 
-用户通过 `echo-agent dashboard build` 触发首次构建。
+源码开发者可用 `echo-agent dashboard build` 构建；已打包 wheel 内置 Dashboard，运行不需要 Node/pnpm。
 
 ## 测试
 

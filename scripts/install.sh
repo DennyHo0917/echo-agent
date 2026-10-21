@@ -1273,7 +1273,7 @@ install_deps() {
 # fall back from the (often unreachable) HF mirror to its GCS source. This is
 # best-effort: a failure here never aborts the install — the runtime still works
 # in keyword-only mode and retries the download later with backoff.
-EMBED_MODEL="${ECHO_EMBED_MODEL:-BAAI/bge-small-zh-v1.5}"
+EMBED_MODEL="${ECHO_EMBED_MODEL-BAAI/bge-small-zh-v1.5}"
 # EMBED_CACHE_DIR is set by resolve_paths() to match the runtime's configured
 # cache location; it is deliberately not overridable here, because prefetching
 # into a directory the runtime does not read just wastes the download.
@@ -1442,7 +1442,7 @@ PYEOF
 # verified after joining — a truncated or misordered join fails like a corrupt
 # download. Keep all of this in sync with _RELEASE_PACKAGES in
 # echo_agent/memory/local_rerank.py.
-RERANK_MODEL="${ECHO_RERANK_MODEL:-BAAI/bge-reranker-base}"
+RERANK_MODEL="${ECHO_RERANK_MODEL-BAAI/bge-reranker-base}"
 RERANK_PREFETCH_TIMEOUT="${ECHO_RERANK_PREFETCH_TIMEOUT:-1800}"
 RERANK_PKG_NAME="bge-reranker-base-fastembed.tar.gz"
 RERANK_PKG_SHA256="be3bcc7b24448b3467318f6b4e14fdf0f3e8d4ad0e3c2f1b612a1dd011163fd1"

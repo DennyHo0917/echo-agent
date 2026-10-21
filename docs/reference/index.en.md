@@ -13,7 +13,7 @@ This section provides complete technical reference for Echo Agent v0.3.8 Beta. E
 | [TUI Commands](tui-commands.en.md) | Interactive terminal UI slash commands (local and server-side) |
 | [Configuration Guide](configuration-guide.en.md) | YAML configuration structure, loading order, and field reference |
 | [Environment Variables](environment-variables.en.md) | `ECHO_AGENT_` environment variable mapping and override rules |
-| [Built-in Tools](tools.en.md) | All 30 built-in tools with parameters, risk levels, and examples |
+| [Built-in Tools](tools.en.md) | Built-in tools with parameters, risk levels, and examples |
 | [Security Profile Matrix](security-profile-matrix.en.md) | Security and tool profile levels, permissions, and approval modes |
 | [Gateway API](gateway-api.en.md) | REST API endpoints, authentication, request/response schemas |
 | [WebSocket Protocol](websocket-protocol.en.md) | WebSocket message format, events, and connection lifecycle |

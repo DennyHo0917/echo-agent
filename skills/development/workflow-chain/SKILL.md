@@ -1,6 +1,6 @@
 ---
 name: workflow-chain
-description: "Chain multiple skills and actions into named workflows with error handling and conditional branching."
+description: "Run reviewed JSON command stages sequentially or in parallel, with per-step timeout and explicit failure handling."
 version: 1.0.0
 metadata:
   echo:
@@ -11,33 +11,11 @@ metadata:
 
 Orchestrate multi-step workflows by chaining skills and actions.
 
-## Workflow Definition
+## Execution boundary
 
-Workflows are YAML files in `~/.echo-agent/workflows/`:
+The bundled `workflow_engine.py` reads JSON files with `stages` and command `steps`. It does not scan `~/.echo-agent/workflows/`, parse YAML skill recipes, substitute `{{variables}}`, evaluate `when`, retry failed steps, or register cron/keyword/event triggers. A command must name an actual executable and its arguments; this is separate from the core Agent-task DAG `workflow` tool.
 
-```yaml
-name: morning-routine
-trigger: cron "0 8 * * *"
-steps:
-  - id: get_weather
-    skill: weather
-    input: {location: "Beijing"}
-
-  - id: get_todos
-    skill: reminder
-    action: due
-
-  - id: compose
-    skill: daily-briefing
-    input:
-      weather: "{{get_weather.output}}"
-      todos: "{{get_todos.output}}"
-
-  - id: deliver
-    action: send
-    channel: telegram
-    content: "{{compose.output}}"
-```
+To combine skills, the Agent reads their instructions and invokes supported tools explicitly. Use the core `cronjob` tool with human approval for periodic execution; a JSON workflow file alone schedules nothing.
 
 ## Security
 
@@ -58,33 +36,12 @@ to ask for a shell explicitly:
 Writing it that way keeps the intent visible in the workflow file instead of
 every step carrying implicit shell power.
 
-## Features
+## Supported command stages
 
-- **Variable interpolation**: `{{step_id.output}}` references previous step results
-- **Conditional steps**: `when: "{{get_weather.temp}} < 5"`
-- **Error handling**: `on_error: skip | abort | retry(3)`
-- **Parallel steps**: `parallel: [step_a, step_b]`
-
-## Built-in Templates
-
-### Research Pipeline
-```yaml
-name: research-pipeline
-steps:
-  - {id: search, skill: web-search, input: {query: "{{topic}}"}}
-  - {id: extract, skill: web-extract, input: {urls: "{{search.top_urls}}"}}
-  - {id: report, skill: deep-research, input: {content: "{{extract.output}}"}}
-```
-
-### Morning Routine
-```yaml
-name: morning-routine
-trigger: cron "0 8 * * *"
-steps:
-  - {id: weather, skill: weather, input: {location: "Beijing"}}
-  - {id: briefing, skill: daily-briefing}
-  - {id: send, action: send, channel: auto, content: "{{briefing.output}}"}
-```
+- `mode: "sequential"` runs steps in order; `"parallel"` uses a bounded thread pool.
+- Each step has a `command`, optional `timeout` and `ignore_error`.
+- `ignore_error` permits continuation after that step's failure; it is not rollback or automatic retry.
+- Outputs are collected for reporting, not interpolated into later commands.
 
 ## Script
 
@@ -104,12 +61,3 @@ Workflow JSON format:
   ]
 }
 ```
-
-## Triggers
-
-| Type | Example |
-|------|---------|
-| Cron | `cron "0 8 * * *"` |
-| Keyword | `keyword "生成报告"` |
-| Manual | `manual` |
-| Event | `event "new_message"` |

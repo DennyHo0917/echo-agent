@@ -4,22 +4,22 @@
 import argparse
 import asyncio
 
-try:
-    from echo_agent.dependencies.skill_require import require
-    require("skill.tts-voice")
-except ImportError:
-    pass
-
-import edge_tts  # noqa: E402
+from echo_agent.dependencies.skill_require import require
 
 
 async def synthesize(text, voice="zh-CN-XiaoxiaoNeural", output="output.mp3", rate="+0%"):
+    require("skill.tts-voice")
+    import edge_tts
+
     communicate = edge_tts.Communicate(text, voice, rate=rate)
     await communicate.save(output)
     print(f"Audio saved: {output} (voice={voice})")
 
 
 async def list_voices(language=None):
+    require("skill.tts-voice")
+    import edge_tts
+
     voices = await edge_tts.list_voices()
     for v in voices:
         if language and not v["Locale"].startswith(language):

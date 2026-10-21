@@ -154,7 +154,11 @@ def _gather_status(config_path: str | Path | None, workspace: str | Path | None)
         config_path=str(config_file) if config_file_exists else None,
         workspace=str(workspace) if workspace else None,
     )
-    health = _health_probes(config)
+    health_config = (
+        config.model_copy(update={"workspace": str(effective_workspace)})
+        if hasattr(config, "model_copy") else config
+    )
+    health = _health_probes(health_config)
 
     profile_is_explicit = profile_explicitly_set(config_file)
     gateway_config = config.model_copy(deep=True) if hasattr(config, "model_copy") else config

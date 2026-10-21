@@ -76,3 +76,19 @@ Set different `gateway.port` values in the two files, and plan credentials, back
 - [Gateway authentication](../integrations/gateway/authentication.en.md)
 - [Backup and restore](backup-restore.en.md)
 - [Security hardening](security-hardening.en.md)
+
+## Headless server deployment and first tool task
+
+An installed production wheel includes the Dashboard, fallback playground, bundled skills, and default config. Runtime needs Python 3.11+ and the selected provider extra; it needs no Node/pnpm, Rust/Tauri, source web directory, or root client directory. Source builders first build web with Node 24 LTS and the pinned pnpm, then run `python -m build`. Do not use a missing-Dashboard escape hatch for distributions.
+
+Create a separate venv and workspace; install `'/absolute/path/echo_agent-0.3.8-py3-none-any.whl[openai]'`, run `pip check`, and create a mode-0600 config with absolute workspace/config paths. Configure an explicit model, `api_key_env: OPENAI_API_KEY`, loopback Gateway, separate random API/admin tokens, and allowlist `api:operator`. The [Chinese deployment walkthrough](deployment.md) contains the complete YAML and reproducible commands. A self-hosted keyless OpenAI-compatible endpoint must explicitly set its `api_base`, including its required API prefix.
+
+Start `echo-agent gateway --config /absolute/config.yaml --workspace /absolute/workspace` in the foreground before installing the [background service](background-service.en.md). `/api/v1/health` measures service response; `/api/v1/ready` additionally checks local runtime, storage, configured provider, and required integrations. Readiness sends no remote model probe and does not verify credentials, quotas, or upstream availability. Submit a real tool task to prove that path.
+
+Use `POST /api/v1/message` with a Bearer API token, JSON `platform: api`, `user_id/chat_id: operator`, `wait: true`, and a stable `Idempotency-Key`. Ask the model to actually call list_dir and inspect its tool record plus final status. Replaying the same key/request queries the original result; changing its content is a conflict. Unconfigured models produce an incomplete/error outcome instead of completed.
+
+The authenticated `/playground` discovers custom HTTP/WS paths from `/meta`. Dashboard ordinary config saves report saved/running differences across refresh and require a restart; explicit channel lifecycle actions support their documented local activation. Use supported interactive WS or server CLI attach commands for tool approval and clarification. Tool approvals and board task review are different operations; neither requires a desktop application. Never auto-approve to make an unattended task look successful.
+
+For persistent output use artifact_create/append/finalize/deliver and their IDs/validation results. HTTP/WS without attachment transport can receive numbered text chunks; synchronous HTTP returns tool deliveries in `reply.tool_deliveries` and the final answer in `reply.text`. Business completion, artifact persistence, send acceptance, and remote acknowledgement remain distinct facts.
+
+Send SIGTERM and verify shutdown before switching to systemd. Give the service its own protected model environment: a service does not inherit an SSH shell's environment. Duplicate Runtime/port conflicts exit nonzero; service-control failures propagate instead of reporting success. The current acceptance host was macOS; Linux wheel-process CI is wired, but no local Linux host/Docker daemon was available. The existing Docker sample is not a newly built or qualified container artifact. See the [review evidence](../reviews/server-review-and-remediation.md).

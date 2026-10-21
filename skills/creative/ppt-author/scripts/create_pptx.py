@@ -11,7 +11,6 @@ def _ensure_deps():
         require("skill.ppt-author")
     except ImportError:
         pass
-    require("skill.ppt-author")
 
 
 def create_pptx(title, slides_data, output="output.pptx", template=None):

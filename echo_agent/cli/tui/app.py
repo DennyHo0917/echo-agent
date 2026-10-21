@@ -151,6 +151,8 @@ class EchoTUI(App):
         # original turn early. The registry keeps primary (conversation) turns
         # separate from control events; see turns.TurnRegistry.
         self._turns = TurnRegistry()
+        self._pending_control_visibility: deque[bool] = deque()
+        self._visible_controls: set[str] = set()
         # A single pending-approval slot is sufficient (no queue needed):
         # approval requests are serialized server-side by inference_stage Phase A
         # — that check is a serial for-loop where cli blocks in wait_for_decision
@@ -318,6 +320,10 @@ class EchoTUI(App):
         kind = self._turns.on_accepted(event_id)
         if kind == "primary" and event_id and self._pending_turn_seqs:
             self._event_turn_seq[event_id] = self._pending_turn_seqs.popleft()
+        elif kind == "control":
+            visible = self._pending_control_visibility.popleft() if self._pending_control_visibility else False
+            if visible and event_id:
+                self._visible_controls.add(event_id)
 
     def on_user_reply_token(self, inbound_id: str, text: str) -> None:
         r = self._replies.get(inbound_id)
@@ -355,7 +361,7 @@ class EchoTUI(App):
         # should not appear as assistant text in the transcript.
         kind = self._turns.on_final(inbound_id)
         r = self._replies.pop(inbound_id, None)
-        if kind == "control":
+        if kind == "control" and inbound_id not in self._visible_controls:
             # If streaming had already started a widget, hide it.
             if r is not None:
                 try:
@@ -366,6 +372,7 @@ class EchoTUI(App):
                     pass
             self._event_turn_seq.pop(inbound_id, None)
             return
+        self._visible_controls.discard(inbound_id)
         if r is None:
             ts = self._event_turn_seq.get(inbound_id, 0)
             r = self._tv.start_reply(turn_seq=ts)
@@ -584,6 +591,8 @@ class EchoTUI(App):
         # now, otherwise the Ctrl+C guard would keep trying to interrupt a turn
         # that already died server-side.
         self._turns.on_terminal_error()
+        self._pending_control_visibility.clear()
+        self._visible_controls.clear()
         try:
             self.query_one(StatusBar).stop_turn_timer()
         except Exception:
@@ -705,6 +714,8 @@ class EchoTUI(App):
         # later submit until the process restarts. Any turn still running
         # server-side delivers its final as a standalone reply, which still shows.
         self._turns.reset_on_reconnect()
+        self._pending_control_visibility.clear()
+        self._visible_controls.clear()
         # Also clear the pending clarify/approval slots and re-enable the prompt:
         # their in-flight acks are unrecoverable across the drop too, and a stale
         # pending slot would keep the keyboard captured / prompt disabled. The
@@ -902,6 +913,15 @@ class EchoTUI(App):
         # question. Control commands (/approve …) are excluded: they act on the
         # running turn and must go through immediately.
         head = text.partition(" ")[0].lower()
+        if head in self._SERVER_CONTROLS:
+            # Typed commands need their result (including usage/permission/stale
+            # request errors). Visibility is independent of turn classification:
+            # their replies must never settle the business turn.
+            self._turns.note_send("control")
+            self._pending_control_visibility.append(True)
+            if self._send is not None:
+                await self._send(text)
+            return
         if head not in self._SERVER_CONTROLS and self._turns.has_active_primary:
             now = time.monotonic()
             if now - self._last_queue_confirm >= self.QUEUE_CONFIRM_WINDOW:
@@ -1377,6 +1397,7 @@ class EchoTUI(App):
             # Control send: its accepted frame and ack reply must NOT become the
             # interrupt target nor stop the original (still-parked) turn's timer.
             self._turns.note_send("control")
+            self._pending_control_visibility.append(False)
             try:
                 await self._send(cmd)
             except Exception:
@@ -1413,6 +1434,7 @@ class EchoTUI(App):
             # Control send (clarify answer): tracked separately so it doesn't
             # clobber the primary turn that is parked waiting for this answer.
             self._turns.note_send("control")
+            self._pending_control_visibility.append(False)
             try:
                 await self._send(clarify_command(blk.clarify_id, answer))
             except Exception:

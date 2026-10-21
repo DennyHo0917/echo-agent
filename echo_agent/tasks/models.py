@@ -31,7 +31,7 @@ VALID_TASK_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.SUSPENDED, TaskStatus.CANCELLED,
     },
     TaskStatus.BLOCKED: {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCELLED},
-    TaskStatus.REVIEW: {TaskStatus.SUCCESS, TaskStatus.QUEUED},
+    TaskStatus.REVIEW: {TaskStatus.SUCCESS, TaskStatus.QUEUED, TaskStatus.CANCELLED},
     TaskStatus.SUSPENDED: {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCELLED},
     TaskStatus.FAILED: {TaskStatus.QUEUED},  # retry
     TaskStatus.SUCCESS: set(),

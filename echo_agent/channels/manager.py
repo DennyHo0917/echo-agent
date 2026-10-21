@@ -742,6 +742,7 @@ class ChannelManager:
                 try:
                     await asyncio.wait_for(existing.stop(), timeout=10)
                 finally:
+                    self.bus.unsubscribe_outbound(name, existing.send)
                     self._channels.pop(name, None)
             channel = self._build_channel(name)
             try:
@@ -751,6 +752,8 @@ class ChannelManager:
                     await channel.stop()
                 except Exception as cleanup_error:
                     logger.debug("Channel {} cleanup after failed start also failed: {}", name, cleanup_error)
+                finally:
+                    self.bus.unsubscribe_outbound(name, channel.send)
                 raise
             self._channels[name] = channel
         logger.info("Channel {} {}", name, "started" if channel.is_running else "inactive")
@@ -766,6 +769,7 @@ class ChannelManager:
             try:
                 await asyncio.wait_for(channel.stop(), timeout=10)
             finally:
+                self.bus.unsubscribe_outbound(name, channel.send)
                 self._channels.pop(name, None)
         logger.info("Channel {} stopped", name)
         await self._emit_lifecycle(name, "stopped")
@@ -806,6 +810,8 @@ class ChannelManager:
                 logger.warning("Channel {} stop timed out", name)
             except Exception as e:
                 logger.error("Failed to stop channel {}: {}", name, e)
+            finally:
+                self.bus.unsubscribe_outbound(name, channel.send)
         self._channels.clear()
 
     async def _ttl_cleanup_loop(self) -> None:

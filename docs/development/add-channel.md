@@ -18,7 +18,7 @@ echo_agent/channels/
 ```
 用户消息 → Channel.start() 监听
          → 构造 InboundEvent
-         → bus.publish(InboundEvent)
+         → bus.publish_inbound(InboundEvent)
          → AgentLoop 处理
          → OutboundEvent
          → Channel.send(OutboundEvent) → 用户
@@ -67,6 +67,7 @@ import hashlib
 from typing import Any
 
 import aiohttp
+from aiohttp import web
 from loguru import logger
 
 from echo_agent.bus.events import InboundEvent, OutboundEvent, ContentBlock, ContentType
@@ -83,8 +84,8 @@ class LineChannel(BaseChannel):
 
     def __init__(self, config: Any, bus: MessageBus):
         super().__init__(config, bus)
-        self._token: str = config.line_channel_token or ""
-        self._secret: str = config.line_channel_secret or ""
+        self._token: str = config.channel_token or ""
+        self._secret: str = config.channel_secret or ""
         self._webhook_path: str = "/webhook/line"
         self._session: aiohttp.ClientSession | None = None
 
@@ -115,15 +116,18 @@ class LineChannel(BaseChannel):
         data = await request.json()
         for event in data.get("events", []):
             if event["type"] == "message" and event["message"]["type"] == "text":
-                inbound = InboundEvent(
-                    channel=self.name,
-                    chat_id=event["source"]["userId"],
-                    user_id=event["source"]["userId"],
-                    text=event["message"]["text"],
-                    message_id=event["message"]["id"],
-                    reply_token=event.get("replyToken", ""),
-                )
-                await self.bus.publish(inbound)
+                try:
+                    inbound = self._build_event(
+                        sender_id=event["source"]["userId"],
+                        chat_id=event["source"]["userId"],
+                        text=event["message"]["text"],
+                        metadata={"message_id": event["message"]["id"]},
+                    )
+                except PermissionError:
+                    continue
+                if not await self.bus.publish_inbound(inbound):
+                    return web.Response(status=503)
+
 
         return aiohttp.web.Response(status=200)
 
@@ -348,6 +352,12 @@ async def test_non_final_is_not_delivered(channel):
     `OutboundEvent` 与 `InboundEvent` 的正文字段是 `content: list[ContentBlock]`，没有 `text` 构造参数 —— `OutboundEvent(text="hi")` 会抛 `TypeError`。发送方向用类方法 `OutboundEvent.text_reply(channel=..., chat_id=..., text=...)`；读取方向用 `event.text` 属性，它会把内容块拼成字符串。
 
     接收方向不要自己构造 `InboundEvent`：调用基类的 `self._build_event(sender_id=..., chat_id=..., text=...)`，它会执行 `allow_from` 白名单校验，并剥掉外部传入的 `_` 前缀内部控制键（如 `_cron_authorized`）。绕过它等于把审批闸门交给外部输入。
+
+## 适配器示例的边界
+
+以上 LINE 示例展示接口结构，尚需显式接线 webhook 路由、配置校验与生命周期，不能只创建 ClientSession 就算入站服务启动。经签名验证的原生消息应使用 `_native_event_id` 绑定持久化回合身份，并声明 `authenticated_ingress`；Runtime 拒收时不能提前向平台确认。调用 `_build_event` 保留白名单与 metadata 清洗，不直接构造外部 InboundEvent。
+
+对于发送超时、HTTP 5xx 或缺回执，使用既有投递账本记录 UNKNOWN/部分发送，不能把异常文本当成明确未送达后盲重试；逐段已确认的部分不能重发。`stop()` 应取消并 await 所有拥有的后台任务，再关闭连接。
 
 ## 检查清单
 

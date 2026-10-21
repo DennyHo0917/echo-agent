@@ -52,9 +52,12 @@ def add_event(url, username, password, summary, start_str, end_str=None, calenda
     client = _get_client(url, username, password)
     principal = client.principal()
     calendars = principal.calendars()
-    cal = calendars[0]
     if calendar_name:
-        cal = next((c for c in calendars if c.name == calendar_name), cal)
+        cal = next((c for c in calendars if c.name == calendar_name), None)
+        if cal is None:
+            raise ValueError(f"Calendar '{calendar_name}' not found; no event was created")
+    else:
+        cal = calendars[0]
 
     start = datetime.fromisoformat(start_str)
     end = datetime.fromisoformat(end_str) if end_str else start + timedelta(hours=1)

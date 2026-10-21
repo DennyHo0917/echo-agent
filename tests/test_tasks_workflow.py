@@ -727,7 +727,7 @@ class TestWorkflowDAGExecution:
 
 
 class TestTaskToolWorkflowLoop:
-    """LLM 即执行器:task complete 后 DAG 自动 advance,下一步自动入队。"""
+    """Dispatcher claims attempts; task complete advances the owning DAG."""
 
     def _setup(self):
         from echo_agent.agent.tools.task import TaskTool
@@ -737,6 +737,26 @@ class TestTaskToolWorkflowLoop:
         engine = WorkflowEngine(storage, mgr)
         tool = TaskTool(manager=mgr, workflow_engine=engine)
         return tool, mgr, engine
+
+    async def _claim_attempt(self, tool, mgr, engine, task_id):
+        from echo_agent.tools import ToolExecutionContext
+
+        assert (await tool.execute({"action": "start", "task_id": task_id})).success
+        assert (await mgr.get(task_id)).status == TaskStatus.QUEUED
+        premature = await tool.execute({"action": "complete", "task_id": task_id})
+        assert not premature.success  # Queuing must never manufacture completion.
+        assert (await mgr.get(task_id)).status == TaskStatus.QUEUED
+        # The exact workflow claim/context path used by TaskDispatcher, rather
+        # than treating the agent-facing start action as an execution owner.
+        claimed = await engine.claim_step(task_id)
+        assert claimed.status == TaskStatus.RUNNING
+        event_id = f"event-{task_id}"
+        context = await mgr.set_running_context(
+            task_id, f"task:{task_id}", event_id,
+            owner_id="test-dispatcher", lease_ttl_ms=60000, attempt_id=f"attempt-{task_id}",
+        )
+        assert context is not None and context.attempt_id
+        return ToolExecutionContext(session_key=context.session_id, inbound_event_id=event_id)
 
     @pytest.mark.asyncio
     async def test_complete_running_task_passes_through_review(self):
@@ -759,8 +779,8 @@ class TestTaskToolWorkflowLoop:
         t1_id = wf.step_tasks["s1"]
         assert "s2" not in wf.step_tasks  # 依赖未满足,尚未入队
 
-        await tool.execute({"action": "start", "task_id": t1_id})
-        result = await tool.execute({"action": "complete", "task_id": t1_id, "result": "ok"})
+        ctx = await self._claim_attempt(tool, mgr, engine, t1_id)
+        result = await tool.execute({"action": "complete", "task_id": t1_id, "result": "ok"}, ctx)
         assert result.success is True
 
         wf = await engine.get(wf.id)
@@ -777,10 +797,13 @@ class TestTaskToolWorkflowLoop:
         ])
         wf = await engine.start(wf.id)
         t1_id = wf.step_tasks["s1"]
-        await tool.execute({"action": "start", "task_id": t1_id})
-        await tool.execute({"action": "fail", "task_id": t1_id, "error": "boom"})
+        ctx = await self._claim_attempt(tool, mgr, engine, t1_id)
+        result = await tool.execute({"action": "fail", "task_id": t1_id, "error": "boom"}, ctx)
+        assert result.success
         wf = await engine.get(wf.id)
         assert wf.status == WorkflowStatus.FAILED
+        assert "s2" not in wf.step_tasks
+        assert (await mgr.get(t1_id)).error == "boom"
 
     @pytest.mark.asyncio
     async def test_all_steps_complete_marks_workflow_success(self):
@@ -791,14 +814,15 @@ class TestTaskToolWorkflowLoop:
         ])
         wf = await engine.start(wf.id)
         t1_id = wf.step_tasks["s1"]
-        await tool.execute({"action": "start", "task_id": t1_id})
-        await tool.execute({"action": "complete", "task_id": t1_id})
+        ctx = await self._claim_attempt(tool, mgr, engine, t1_id)
+        assert (await tool.execute({"action": "complete", "task_id": t1_id}, ctx)).success
         wf = await engine.get(wf.id)
         t2_id = wf.step_tasks["s2"]
-        await tool.execute({"action": "start", "task_id": t2_id})
-        await tool.execute({"action": "complete", "task_id": t2_id})
+        ctx = await self._claim_attempt(tool, mgr, engine, t2_id)
+        assert (await tool.execute({"action": "complete", "task_id": t2_id}, ctx)).success
         wf = await engine.get(wf.id)
         assert wf.status == WorkflowStatus.SUCCESS
+        assert [(await mgr.get(task_id)).status for task_id in [t1_id, t2_id]] == [TaskStatus.SUCCESS] * 2
 
     @pytest.mark.asyncio
     async def test_no_engine_keeps_old_behavior(self):

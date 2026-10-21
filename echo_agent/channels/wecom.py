@@ -16,7 +16,7 @@ from echo_agent.bus.events import OutboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.utils.text import split_encoded_message
-from echo_agent.channels.wecom_crypto import decrypt_message, verify_signature
+from echo_agent.channels.wecom_crypto import decrypt_message, require_crypto, verify_signature
 from echo_agent.config.schema import WeComChannelConfig
 
 _API_BASE = "https://qyapi.weixin.qq.com/cgi-bin"
@@ -38,6 +38,7 @@ class WeComChannel(BaseChannel):
         self._token_expires: float = 0
 
     async def start(self) -> None:
+        require_crypto()
         if not self._encoding_aes_key and not self._token:
             logger.warning("WeCom channel: both encoding_aes_key and token are empty — all webhook requests will be rejected (fail-closed)")
         self._session = aiohttp.ClientSession()
@@ -164,10 +165,14 @@ class WeComChannel(BaseChannel):
         if not text and not media:
             return web.Response(text="success")
 
+        native_id = root.findtext("MsgId", "")
+        if not native_id and msg_type == "event" and root.findtext("CreateTime", ""):
+            native_id = root.findtext("CreateTime", "") + ":" + root.findtext("Event", "")
         await self._handle_message(
             sender_id=from_user, chat_id=from_user, text=text,
             media=media or None,
             metadata={"msg_type": msg_type},
+            event_id=self._native_event_id(from_user, native_id),
         )
         return web.Response(text="success")
 

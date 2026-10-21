@@ -36,7 +36,7 @@ class StubProvider(LLMProvider):
         if not self._notified:
             self._notified = True
             logger.error("StubProvider invoked — no real LLM available: {}", self._message)
-        return LLMResponse(content=self._message)
+        return LLMResponse(content=self._message, finish_reason="error")
 
     def get_default_model(self) -> str:
         return "stub"

@@ -61,7 +61,7 @@ Echo Agent 内置 41 个工具。本页的工具名、参数、能力标签均�
 | `send_file` | `send_file.py` | ❌ | ❌ | ❌ | `fs.read` `message.send` |
 | `skill_install` | `skill_install.py` | ❌ | ❌ | ❌ | `skill.install` `network.outbound` `fs.write` |
 | `skill_manage` | `skills.py` | ❌ | ❌ | ❌ | `skill.write` `fs.write` |
-| `skill_run` | `skill_run.py` | ❌ | ❌ | ❌ | 未分类 |
+| `skill_run` | `skill_run.py` | ❌ | ❌ | ❌ | `process.exec` `code.exec` `skill.read` |
 | `spawn_task` | `delegate.py` | ❌ | ❌ | ❌ | 未分类 |
 | `web_fetch` | `web.py` | ❌ | ❌ | ❌ | `network.outbound` |
 | `web_search` | `web.py` | ❌ | ❌ | ❌ | `network.outbound` |
@@ -72,12 +72,7 @@ Echo Agent 内置 41 个工具。本页的工具名、参数、能力标签均�
 
 ## 高风险工具
 
-`HIGH_RISK_TOOLS` 是独立于档位的高风险集合，共 6 个：`cronjob`、`exec`、`execute_code`、`process`、`skill_install`、`skill_manage`。
-
-两个运行形态在此基础上追加限制：
-
-- **`public_gateway`** — 在高风险 6 个之外，另行拒绝 `edit_file`、`knowledge_index`、`patch`、`workflow`、`write_file`，共 11 个；同时按能力拒绝 `code.exec`、`fs.write`、`process.exec`、`process.manage`、`scheduler.write`、`skill.install`、`skill.write`、`workflow.write`。
-- **`daemon`** — 默认拒绝 `exec`、`execute_code`、`process`、`skill_install`；同时按能力拒绝 `code.exec`、`process.exec`、`process.manage`、`skill.install`。
+高风险与运行形态拒绝集合以[安全档位矩阵](security-profile-matrix.md)为准。`skill_run` 具备 `process.exec` / `code.exec`，与执行工具一样受后台/公网默认拒绝约束；MCP 的 `mcp.call` 也默认拒绝。
 
 `artifact_*` 使用独立的会话产物命名空间，不接受任意文件路径，也不具备 `fs.write` 或 `process.exec` 能力，因此在 `public_gateway` 下仍默认可用。公网文档任务应使用该链路，不应放开通用 `write_file` 或 `exec`。
 
@@ -290,7 +285,7 @@ Echo Agent 内置 41 个工具。本页的工具名、参数、能力标签均�
 | `caption` | string | | 附带说明文字 |
 | `as_image` | boolean | | 是否以图片形式发送 |
 
-调用前应确认目标通道的 `supports_files` 为真，否则文件无法送达。目前只有 `weixin` 恒定支持，`qqbot` 取决于 `media_enabled` 配置。详见[消息通道](../integrations/channels/index.md)。
+调用前应确认目标通道的 `supports_files` 为真，否则文件无法送达。`weixin`、`dingtalk`、`whatsapp` 声明支持，`qqbot` 取决于 `media_enabled` 配置。详见[消息通道](../integrations/channels/index.md)。
 
 #### clarify
 
@@ -379,7 +374,7 @@ Echo Agent 内置 41 个工具。本页的工具名、参数、能力标签均�
 | `full_page` | boolean | | — | 截图是否包含整页 |
 | `timeout_sec` | integer | | — | 超时（秒） |
 
-出站请求统一经 `echo_agent/security/net_guard.py` 的 SSRF 策略校验，无法解析的主机会被拒绝。
+Web 抓取与媒体下载使用 `net_guard`，浏览器对请求目标单独校验；这不是任意 SDK/shell 流量的统一网络沙箱。
 
 ### 执行与进程
 

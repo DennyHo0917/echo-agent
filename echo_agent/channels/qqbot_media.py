@@ -15,6 +15,7 @@ from typing import Any
 
 import aiohttp
 from loguru import logger
+from echo_agent.channels.base import DeliveryRejected
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -470,14 +471,16 @@ async def send_media_message(
                     payload.pop("msg_id", None)
                     continue
                 if resp.status in (400, 401, 403, 404):
-                    raise RuntimeError(
+                    raise DeliveryRejected(
                         f"Send media failed ({resp.status}): {resp_text[:200]}"
                     )
-                last_error = RuntimeError(
-                    f"Send media error ({resp.status}): {resp_text[:200]}"
-                )
+                if resp.status != 429:
+                    raise RuntimeError(f"Send media outcome unknown (HTTP {resp.status})")
+                last_error = DeliveryRejected("QQ media rate limited")
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            last_error = e
+            # A missing response may follow a committed remote send. The
+            # existing part ledger owns recovery; never send another copy here.
+            raise RuntimeError(f"QQ media transport outcome unknown ({type(e).__name__})") from e
 
         if attempt < _SEND_RETRIES - 1:
             await asyncio.sleep(1 * (attempt + 1))

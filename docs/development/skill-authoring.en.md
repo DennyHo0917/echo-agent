@@ -23,7 +23,7 @@ skills/
 
 Each Skill is defined by a `SKILL.md` file containing YAML frontmatter and Markdown body:
 
-```markdown
+````markdown
 ---
 name: calculator
 description: "Math calculations, unit conversions, date/time arithmetic, and currency rates. Python-powered, no API needed for math."
@@ -39,20 +39,20 @@ Math, units, dates, and currency conversion.
 
 ## Math Expressions
 
-Safe evaluation via Python:
+Use the bundled calculator, which validates supported AST nodes before evaluating:
 
 ```python
-import ast
-result = eval(compile(ast.parse("2**10 + 3.14 * 2", mode='eval'), '', 'eval'))
+from subprocess import run
+run(["python3", "scripts/calc.py", "eval", "2**10 + 3.14 * 2"], check=True)
 ```
 
 ## Script
 
 ```bash
-python3 scripts/calc.py "2**32 - 1"
+python3 scripts/calc.py eval "2**32 - 1"
 python3 scripts/calc.py convert 100 km mi
 ```
-```
+````
 
 ## Frontmatter Fields
 
@@ -62,9 +62,9 @@ python3 scripts/calc.py convert 100 km mi
 | `description` | Yes | Functionality description (Agent uses this to decide when to invoke) |
 | `version` | No | Semantic version number |
 | `metadata.echo.tags` | No | Category tags (for search and filtering) |
-| `metadata.echo.dependencies` | No | Python package dependency list |
-| `metadata.echo.requires_env` | No | Required environment variables |
-| `metadata.echo.risk_level` | No | Risk level: `read` / `write` / `exec` |
+| `metadata.echo.requires.pip` | No | Python package dependency list |
+| `metadata.echo.requires.env` | No | Required environment variables |
+| `metadata.echo.risk_level (advisory metadata)` | No | Risk level: `read` / `write` / `exec` |
 
 ## Writing Principles
 
@@ -102,7 +102,7 @@ Skills can be:
 
 ## Full Example: Web Search Skill
 
-```markdown
+````markdown
 ---
 name: web-search
 description: "Search the web for current information, news, documentation, and answers. Uses DuckDuckGo, no API key required."
@@ -110,7 +110,8 @@ version: 1.0.0
 metadata:
   echo:
     tags: [Search, Web, News, Research]
-    dependencies: [duckduckgo_search]
+    requires:
+      pip: [ddgs]
     risk_level: read
 ---
 
@@ -121,7 +122,7 @@ Search the internet for up-to-date information.
 ## Basic Search
 
 ```python
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 with DDGS() as ddgs:
     results = list(ddgs.text("query here", max_results=5))
@@ -146,7 +147,7 @@ with DDGS() as ddgs:
 - Combine multiple searches for comprehensive coverage
 - Verify facts from multiple sources
 - Include date constraints for time-sensitive queries
-```
+````
 
 ## Skills with Dependencies
 
@@ -155,8 +156,9 @@ If a Skill requires additional Python packages, declare them in metadata:
 ```yaml
 metadata:
   echo:
-    dependencies: [duckduckgo_search, trafilatura]
-    requires_env: []  # No API Key needed
+    requires:
+      pip: [ddgs, trafilatura]
+      env: []  # No API Key needed
 ```
 
 Corresponding Python packages should be declared in `pyproject.toml` under `[project.optional-dependencies] skills`.

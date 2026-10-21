@@ -7,20 +7,17 @@ import json
 import sys
 from pathlib import Path
 
-try:
+def _ensure_deps():
     from echo_agent.dependencies import require
-    require("skill.excel-author")
-except ImportError:
-    pass
 
-try:
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill, Alignment
-except ImportError:
-    sys.exit("Install: pip install openpyxl")
+    require("skill.excel-author")
 
 
 def from_csv(csv_file, output="output.xlsx", sheet_name="Sheet1"):
+    _ensure_deps()
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
     wb = Workbook()
     ws = wb.active
     ws.title = sheet_name
@@ -35,6 +32,10 @@ def from_csv(csv_file, output="output.xlsx", sheet_name="Sheet1"):
 
 
 def from_json(json_file, output="output.xlsx"):
+    _ensure_deps()
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+
     data = json.loads(Path(json_file).read_text())
     if not data:
         sys.exit("Empty JSON data")
@@ -55,6 +56,10 @@ def from_json(json_file, output="output.xlsx"):
 
 
 def quick_table(title, headers, rows, output="output.xlsx"):
+    _ensure_deps()
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment
+
     wb = Workbook()
     ws = wb.active
     ws.title = title

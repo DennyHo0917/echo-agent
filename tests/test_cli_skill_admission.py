@@ -41,7 +41,16 @@ async def test_list_staged_and_approve_via_admission(tmp_path, capsys):
 
 def _fake_admission():
     """Return (ctx, adm) doubles matching _build_admission's contract."""
-    ctx = SimpleNamespace(storage=SimpleNamespace(close=AsyncMock()))
+    # CLI actions now close the full shared runtime, including a bootstrap
+    # that was never started. Keep the double faithful to BootstrapResult.
+    ctx = SimpleNamespace(
+        storage=SimpleNamespace(close=AsyncMock()),
+        health=SimpleNamespace(stop=AsyncMock()),
+        bus=SimpleNamespace(stop=AsyncMock()),
+        channels=SimpleNamespace(stop_all=AsyncMock()),
+        agent=SimpleNamespace(stop=AsyncMock()),
+        scheduler=None, task_dispatcher=None, instance_lock=None, providers=[],
+    )
     adm = SimpleNamespace(
         list_staged=AsyncMock(return_value=[]),
         approve=AsyncMock(return_value=SimpleNamespace(outcome="written", message="ok")),

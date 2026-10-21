@@ -240,28 +240,31 @@ class SlackChannel(BaseChannel):
 
     async def _handle_ws_event(self, data: dict[str, Any]) -> None:
         envelope_id = data.get("envelope_id")
-        if envelope_id and self._ws and not self._ws.closed:
-            await self._ws.send_json({"envelope_id": envelope_id})
 
         evt_type = data.get("type")
         if evt_type == "events_api":
             payload = data.get("payload", {})
             event = payload.get("event", {})
-            await self._on_event(event)
+            if await self._on_event(event) is False:
+                return  # no ACK: Socket Mode can redeliver the same native ID
         elif evt_type == "disconnect":
             logger.info("Slack requested disconnect, reconnecting...")
             if self._ws and not self._ws.closed:
                 await self._ws.close()
+        if envelope_id and self._ws and not self._ws.closed:
+            await self._ws.send_json({"envelope_id": envelope_id})
 
-    async def _on_event(self, event: dict[str, Any]) -> None:
+    async def _on_event(self, event: dict[str, Any]) -> bool:
         if event.get("type") != "message":
-            return
+            return True
         if event.get("subtype"):
-            return
+            return True
         if event.get("bot_id"):
-            return
+            return True
 
         sender_id = event.get("user", "")
+        if not self.is_allowed(sender_id):
+            return True
         channel_id = event.get("channel", "")
         channel_type = event.get("channel_type", "")
         text = event.get("text", "")
@@ -280,12 +283,12 @@ class SlackChannel(BaseChannel):
                     media.append({"type": kind, "url": url})
 
         if not text and not media:
-            return
+            return True
 
         # Include thread_ts in session_key so different threads have independent sessions
         session_key = f"{self.name}:{channel_id}:{thread_ts}" if thread_ts else None
 
-        await self._handle_message(
+        inbound = await self._handle_message(
             sender_id=sender_id,
             chat_id=channel_id,
             text=text,
@@ -293,7 +296,9 @@ class SlackChannel(BaseChannel):
             metadata={"thread_ts": thread_ts, "channel_type": channel_type},
             session_key=session_key,
             is_group=channel_type != "im",
+            event_id=self._native_event_id(channel_id, event.get("client_msg_id") or event.get("ts")),
         )
+        return inbound is not None
 
     async def _download_slack_file(self, url: str) -> str | None:
         """Download a Slack file using the bot token for authentication."""

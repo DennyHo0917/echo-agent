@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
@@ -115,16 +116,21 @@ class EvalRunner:
         result = CaseResult(case_id=case.id, category=case.category)
         try:
             from echo_agent.bus.events import InboundEvent
-            import uuid
+            # Every invocation is a fresh conversation, including repeated
+            # dataset runs and duplicate case IDs in a merged dataset. A case ID
+            # identifies a measurement, never a durable conversation.
             event = InboundEvent.text_message(
                 channel="eval", sender_id="eval-runner",
-                chat_id=f"eval:{case.id}", text=case.input,
+                chat_id=f"eval:{uuid.uuid4().hex}:{case.id}", text=case.input,
             )
+            event.unattended = True
             proc_result = await asyncio.wait_for(
                 self._loop._process_event(event, trace_id=uuid.uuid4().hex[:12]),
                 timeout=self._timeout,
             )
             result.response = proc_result.response_text or ""
+            if getattr(proc_result, "task_incomplete", False):
+                result.error = getattr(proc_result, "termination_reason", "") or "incomplete agent turn"
             try:
                 session = await self._loop.sessions.get_or_create(event.session_key)
                 seen: list[str] = []
@@ -193,13 +199,20 @@ class EvalRunner:
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         report = EvalReport(total_cases=len(dataset.cases))
-        for r in results:
+        for case, r in zip(dataset.cases, results):
             if isinstance(r, CaseResult):
                 report.results.append(r)
                 if r.passed:
                     report.passed_cases += 1
             else:
-                report.results.append(CaseResult(error=str(r)))
+                # Preserve provenance for category-specific regression gates.
+                # A scoring/orchestration exception supplies no measurement,
+                # so it cannot count as conclusive evidence for promotion.
+                report.results.append(CaseResult(
+                    case_id=case.id, category=case.category, error=str(r),
+                    metrics=[MetricResult(name="execution", passed=False, inconclusive=True,
+                                          details={"error": str(r)})],
+                ))
         report.duration_ms = (time.monotonic() - start) * 1000
         logger.info("Eval complete: {}/{} passed, avg score {:.3f}", report.passed_cases, report.total_cases, report.avg_score)
         return report

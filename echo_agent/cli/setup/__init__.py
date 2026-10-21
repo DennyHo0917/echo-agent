@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import math
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable
 
@@ -1072,7 +1073,7 @@ def setup_observability(config: dict) -> None:
 _EVOLUTION_TRIGGER_KEYS: list[str] = ["manual", "threshold", "scheduled"]
 
 
-def setup_evolution(config: dict) -> None:
+def setup_evolution(config: dict, *, workspace: Path | None = None) -> None:
     """Configure the self-evolving skill harness.
 
     Disabled by default. When enabled, this section also writes
@@ -1190,7 +1191,7 @@ def setup_evolution(config: dict) -> None:
     # Ensure the baseline dataset exists — otherwise PromotionGate will
     # reject every candidate. Resolve workspace from config (it may be
     # relative; in that case we anchor at cwd).
-    ws = _resolve_workspace(config)
+    ws = workspace if workspace is not None else _resolve_workspace(config)
     dataset_path = ws / evo["eval_dataset_path"]
     if not dataset_path.exists():
         try:
@@ -1447,17 +1448,24 @@ def setup_doctor(config: dict) -> None:
 
 # ── Credential key ──────────────────────────────────────────────────────────
 
-def _resolve_workspace(config: dict) -> Path:
-    """Resolve the workspace dir from config, anchoring relative paths at cwd.
+def _resolve_workspace(
+    config: dict, config_path: str | Path | None = None, workspace: str | Path | None = None,
+) -> Path:
+    """Use the runtime's config-relative rule without changing persisted YAML."""
+    from types import SimpleNamespace
 
-    Mirrors the runtime's relative-path handling so setup writes artifacts
-    (e.g. the credential key) to the same place the agent later reads them.
-    """
-    workspace_raw = config.get("workspace") or "~/.echo-agent"
-    ws = Path(str(workspace_raw)).expanduser()
-    if not ws.is_absolute():
-        ws = (Path.cwd() / ws).resolve()
-    return ws
+    from echo_agent.cli.workspace import resolve_effective_workspace
+
+    return resolve_effective_workspace(
+        SimpleNamespace(workspace=str(config.get("workspace") or "~/.echo-agent")),
+        str(config_path) if config_path else None,
+        str(workspace) if workspace is not None else None,
+    )
+
+
+def _doctor_config(config: dict, config_path=None, workspace=None) -> dict:
+    """Give probes an absolute workspace while keeping user configuration portable."""
+    return {**config, "workspace": str(_resolve_workspace(config, config_path, workspace))}
 
 
 def _ensure_credential_key(workspace: Path) -> None:
@@ -2006,7 +2014,7 @@ def _run_setup_wizard(
                   section rejects it rather than pretending to be scriptable.
     """
     if as_json:
-        config, _ = _load_existing_config(config_path, workspace)
+        config, existing_file = _load_existing_config(config_path, workspace)
         _resolve_initial_locale(config, lang)
         canonical = SECTION_ALIASES.get((section or "").lower(), (section or "").lower())
         if canonical != "doctor":
@@ -2018,7 +2026,7 @@ def _run_setup_wizard(
             return 2
         set_color_override(False)
         try:
-            report = doctor_report(config)
+            report = doctor_report(_doctor_config(config, existing_file, workspace))
             print(json.dumps(report, ensure_ascii=False, indent=2))
         finally:
             set_color_override(None)
@@ -2043,12 +2051,16 @@ def _run_setup_wizard(
     _resolve_initial_locale(config, lang)
     config.setdefault("ui", {})["locale"] = get_locale()
 
-    section_map = {key: func for key, func in SETUP_SECTIONS}
+    runtime_workspace = _resolve_workspace(config, config_target, workspace)
+    section_map = {
+        key: partial(func, workspace=runtime_workspace) if key == "evolution" else func
+        for key, func in SETUP_SECTIONS
+    }
     if section:
         canonical = SECTION_ALIASES.get(section.lower(), section.lower())
         if canonical == "doctor":
             _print_banner()
-            setup_doctor(config)
+            setup_doctor(_doctor_config(config, config_target, workspace))
             return 0
         func = section_map.get(canonical)
         if func is None:
@@ -2089,7 +2101,7 @@ def _run_setup_wizard(
         elif choice == "full":
             flow = "full"
         elif choice == "doctor":
-            setup_doctor(config)
+            setup_doctor(_doctor_config(config, config_target, workspace))
             return 0
         else:
             key = choice.split(":", 1)[1]
@@ -2125,21 +2137,21 @@ def _run_setup_wizard(
         setup_permissions(config)
         setup_security(config)
         path = save_config(config, config_target)
-        _ensure_credential_key(_resolve_workspace(config))
-        setup_doctor(config)
+        _ensure_credential_key(runtime_workspace)
+        setup_doctor(_doctor_config(config, config_target, workspace))
         _print_summary(config, path)
         _offer_gateway_start(config, path, workspace)
         ui.outro(t("summary.complete"))
         return 0
 
-    for _key, func in SETUP_SECTIONS:
+    for _key, _func in SETUP_SECTIONS:
         if _key == "language" and language_done:
             continue  # already chosen before the first_run menu
-        func(config)
+        section_map[_key](config)
 
     path = save_config(config, config_target)
-    _ensure_credential_key(_resolve_workspace(config))
-    setup_doctor(config)
+    _ensure_credential_key(runtime_workspace)
+    setup_doctor(_doctor_config(config, config_target, workspace))
     _print_summary(config, path)
     _offer_gateway_start(config, path, workspace)
     print_success(t("summary.complete"))

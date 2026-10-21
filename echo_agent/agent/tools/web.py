@@ -54,6 +54,10 @@ class WebFetchTool(Tool):
     }
     timeout_seconds = 30
     _MAX_REDIRECTS = 5
+    # Bound the decompressed bytes acquired before decoding/truncating. A
+    # max_chars slice after resp.text() cannot protect memory from a large or
+    # never-ending response. Keep enough room for the existing 2M-char cap.
+    _MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
     # Per-request budget, kept strictly under the registry's ``timeout_seconds``
     # wait_for. With both deadlines at 30s they raced, and the winner decided
@@ -69,6 +73,23 @@ class WebFetchTool(Tool):
     def _request_timeout(self) -> float:
         """Per-request deadline that stays inside the registry's wait_for."""
         return max(1.0, self.timeout_seconds - self._REQUEST_TIMEOUT_MARGIN)
+
+    async def _read_response_text(self, resp: aiohttp.ClientResponse) -> tuple[str, int, bool]:
+        body = bytearray()
+        truncated = False
+        async for chunk in resp.content.iter_chunked(64 * 1024):
+            remaining = self._MAX_RESPONSE_BYTES - len(body)
+            if len(chunk) > remaining:
+                body.extend(chunk[:remaining])
+                truncated = True
+                break
+            body.extend(chunk)
+        charset = resp.charset if isinstance(resp.charset, str) else "utf-8"
+        try:
+            text = body.decode(charset, errors="replace")
+        except LookupError:
+            text = body.decode("utf-8", errors="replace")
+        return text, len(body), truncated
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         url = params["url"]
@@ -109,17 +130,20 @@ class WebFetchTool(Tool):
                         # then re-validate on the next loop iteration.
                         current = urljoin(current, location)
                         continue
-                    text = await resp.text()
+                    text, bytes_read, acquisition_truncated = await self._read_response_text(resp)
                     original_len = len(text)
                     if len(text) > max_chars:
                         text = text[:max_chars] + f"\n... (truncated, {original_len} total)"
+                    if acquisition_truncated:
+                        text += f"\n... (download stopped at {self._MAX_RESPONSE_BYTES} bytes; full response size unknown)"
                     content_type = resp.headers.get("content-type", "")
                     header = (
                         f"HTTP {resp.status} {resp.reason or ''}\n"
                         f"URL: {resp.url}\n"
                         f"Content-Type: {content_type}\n\n"
                     )
-                    metadata = {"status": resp.status, "url": str(resp.url), "content_type": content_type}
+                    metadata = {"status": resp.status, "url": str(resp.url), "content_type": content_type,
+                                "bytes_read": bytes_read, "acquisition_truncated": acquisition_truncated}
                     if resp.status >= 400:
                         return ToolResult(success=False, error=header + text, metadata=metadata)
                     return ToolResult(output=header + text, metadata=metadata)

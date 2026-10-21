@@ -16,9 +16,9 @@
 
 | 档位 | 工具数 | 适用场景 |
 |------|--------|----------|
-| `minimal` | 14 | 只读问答，不写文件、不发媒体 |
-| `messaging` | 18 | 在 `minimal` 基础上增加记忆与媒体生成 |
-| `coding` | 24 | 在 `messaging` 基础上增加文件写入与编排 |
+| `minimal` | 19 | 只读问答，不写文件、不发媒体 |
+| `messaging` | 23 | 在 `minimal` 基础上增加记忆与媒体生成 |
+| `coding` | 29 | 在 `messaging` 基础上增加文件写入与编排 |
 | `full` | 全部 | 白名单为 `*`，放通所有工具（默认） |
 
 各档位的具体工具清单见[内置工具参考](tools.md)的档位对照表。
@@ -32,20 +32,20 @@
 | 档位 | 含义 | 追加拒绝 |
 |------|------|----------|
 | `personal_cli` | 本机单人使用（默认） | 无 |
-| `daemon` | 长期后台运行 | 4 个工具 + 4 类能力 |
-| `public_gateway` | 网关对外暴露 | 11 个工具 + 8 类能力 |
+| `daemon` | 长期后台运行 | 5 个工具 + 5 类能力 |
+| `public_gateway` | 网关对外暴露 | 12 个工具 + 9 类能力 |
 
 ### daemon
 
-拒绝工具：`exec`、`execute_code`、`process`、`skill_install`
+拒绝工具：`exec`、`execute_code`、`process`、`skill_install`、`skill_run`
 
-拒绝能力：`code.exec`、`process.exec`、`process.manage`、`skill.install`
+拒绝能力：`code.exec`、`mcp.call`、`process.exec`、`process.manage`、`skill.install`
 
 ### public_gateway
 
-拒绝工具为 `HIGH_RISK_TOOLS` 的 6 个（`cronjob`、`exec`、`execute_code`、`process`、`skill_install`、`skill_manage`）再加 5 个写入类工具（`edit_file`、`knowledge_index`、`patch`、`workflow`、`write_file`），共 11 个。
+拒绝工具：`cronjob`、`edit_file`、`exec`、`execute_code`、`knowledge_index`、`patch`、`process`、`skill_install`、`skill_manage`、`skill_run`、`workflow`、`write_file`
 
-拒绝能力：`code.exec`、`fs.write`、`process.exec`、`process.manage`、`scheduler.write`、`skill.install`、`skill.write`、`workflow.write`
+拒绝能力：`code.exec`、`fs.write`、`mcp.call`、`process.exec`、`process.manage`、`scheduler.write`、`skill.install`、`skill.write`、`workflow.write`
 
 !!! danger "对外暴露网关前务必确认"
     将网关暴露到公网前，除设置 `security.profile: public_gateway` 外，还需确认已启用鉴权、限制监听地址与来源。网关默认监听 `127.0.0.1`，改为对外监听是一项需要显式开启的动作。详见[安全加固](../operations/security-hardening.md)。
@@ -133,5 +133,5 @@ tools:
 
 ## 相关页面
 
-- [内置工具参考](tools.md) — 36 个工具的参数与能力标签
+- [内置工具参考](tools.md) — 工具参数与能力标签
 - [配置参考](configuration.md) — 由 schema 自动生成的逐项说明

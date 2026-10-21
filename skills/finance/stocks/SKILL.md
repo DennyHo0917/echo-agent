@@ -58,6 +58,8 @@ python3 scripts/market_query.py fund 001496           # Fund
 
 ## Watchlist
 
+The watchlist is an Agent/operator recipe. `market_query.py` does not load watchlist.yaml or start an alert daemon. Use the script CLI for a query, and an explicitly authorized core Cron job for repeated checks and delivery.
+
 Configure `~/.echo-agent/watchlist.yaml`:
 
 ```yaml

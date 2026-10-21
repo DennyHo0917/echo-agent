@@ -14,6 +14,7 @@ The default token header is `X-Echo-Agent-Token`, configurable through `gateway.
 |---|---|---|
 | `POST` | `/message` | Submit a message |
 | `GET` | `/health` | Health status |
+| `GET` | `/ready` | Local task-admission readiness, without remote model probes |
 | `GET` | `/stats` | Runtime statistics |
 | `GET` | `/capabilities` | Caller capabilities |
 | `POST` | `/pair` | Generate a pairing code |
@@ -80,6 +81,12 @@ curl -X POST http://127.0.0.1:58123/api/v1/message \
 
 Error responses generally use `{"error": "..."}`; exact fields and status codes depend on the endpoint. `GET {api_prefix}/health` (default `/api/v1/health`) returns 200 or 503 according to health status.
 
+`GET {api_prefix}/ready` requires no token. It returns 200 only when Gateway, bus, Agent, SQLite connection, a non-Stub provider configuration and required runtime dependencies are locally ready; otherwise it returns 503 with individual `checks`. `provider_remote_verified: false` means no remote probe was performed: 200 does not verify model credentials, quota or upstream networking. A missing model can leave the configuration UI available while readiness remains false.
+
+`GET /config` returns redacted saved values, with active values under `_meta.running` and differences under `_meta.pending_paths`/`_meta.restart_required`. `PATCH /config` validates non-secret leaf fields and saves atomically without mutating the constructed Runtime. Nested patches merge and validate leaves. Explicit channel start/stop/restart loads that channel's saved settings. Environment-variable precedence still applies when reloading.
+
+`POST /cron/{id}/trigger` returns 404 for an absent job and actionable 409 conflicts for disabled/paused/terminal jobs, active runs, full execution capacity or run-lock conflicts.
+
 ## Idempotent retries
 
 Message-submitting entry points accept an idempotency key, so a retry after a
@@ -119,9 +126,11 @@ Same key with **different** content is rejected, and no new event is created:
 !!! warning "409 means key conflict, nothing else"
     409 is reserved for "this key was already used for different content". Do
     **not** retry it — use a new key, or restore the original content. An
-    unfinished turn (`incomplete` / `interrupted`) returns 200 instead, with the
-    nuance carried by the body's `status` field, and those requests are
-    retryable.
+    unfinished turn (`incomplete` / `interrupted`) can return 200 with the outcome
+    in `status`. The same key only replays the saved terminal result; it does
+    not create a new turn. Check existing results and external side effects
+    before explicitly submitting new work. This does not promise exactly-once
+    execution for arbitrary external effects.
 
 A key's scope includes the caller's identity, so keys from different tokens
 never collide:

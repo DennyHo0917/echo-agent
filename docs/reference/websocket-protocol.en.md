@@ -125,7 +125,7 @@ Common error frames are:
 
 ## Dashboard WebSocket
 
-After connecting to `/ws/dashboard`, send an auth frame within five seconds. This endpoint currently reads its token from the frame itself:
+After connecting to `/ws/dashboard`, send an auth frame within an absolute ten-second deadline; invalid frames do not extend it. This endpoint reads its token from the frame itself:
 
 ```json
 {"type": "auth", "token": "your-api-token"}
@@ -147,7 +147,9 @@ To unsubscribe:
 {"type": "unsubscribe", "channels": ["cron"]}
 ```
 
-`tasks` and `cron` currently have live event sources. `sessions`, `memory`, `skills`, `channels`, `logs`, `analytics`, and `knowledge` are reserved subscription names without connected emitters. Unknown names produce `subscribe_error`.
+All nine channels (`tasks`, `cron`, `sessions`, `memory`, `skills`, `channels`, `logs`, `analytics`, `knowledge`) have event sources. The `sessions` channel contains session/turn transcripts and requires admin scope. Read-token memory events carry only `{"changed":true}`, without principal scopes or entry IDs. Unknown or forbidden channels produce `subscribe_error`, with separate `unknown` and `forbidden` lists. An authenticated connection cannot change identity; open a replacement socket.
+
+Browsers omitting `Sec-Fetch-Site` can connect when Origin matches Host and Host passes the deployment allowlist. Different-port origins remain rejected. `/meta` reports the Dashboard socket in `ws_path` and the configurable interactive socket in `interactive_ws_path`.
 
 Broadcasts use a common envelope:
 

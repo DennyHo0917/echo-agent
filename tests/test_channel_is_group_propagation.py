@@ -42,4 +42,5 @@ async def test_matrix_handle_message_passes_is_group_true():
         reply_to_id="$event",
         metadata={"msgtype": "m.text"},
         is_group=True,
+        event_id=channel._native_event_id("!room:example.org", "$event"),
     )

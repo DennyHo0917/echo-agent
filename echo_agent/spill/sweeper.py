@@ -24,16 +24,16 @@ def sweep(root: Path, retention_days: int, max_total_mb: int) -> int:
     文件,不可误删不属于自己的文件。
     """
     root = Path(root)
-    if not root.is_dir():
+    if root.is_symlink() or not root.is_dir():
         return 0
 
     entries: list[tuple[float, int, Path]] = []
     for session_dir in root.glob(SESSION_DIR_GLOB):
-        if not is_session_dir(session_dir) or not session_dir.is_dir():
+        if session_dir.is_symlink() or not is_session_dir(session_dir) or not session_dir.is_dir():
             continue
         # 只看直接子项:产物是平铺的,不下钻就不会碰到误配目录下的深层内容。
         for p in session_dir.iterdir():
-            if not is_artifact(p) or not p.is_file():
+            if p.is_symlink() or not is_artifact(p) or not p.is_file():
                 continue
             try:
                 st = p.stat()
@@ -76,7 +76,7 @@ def _unlink(p: Path) -> bool:
 def _prune_empty_dirs(root: Path) -> None:
     """只剪空的会话目录。rglob 全量剪枝会删掉误配目录下无关的空目录。"""
     for d in root.glob(SESSION_DIR_GLOB):
-        if not is_session_dir(d) or not d.is_dir():
+        if d.is_symlink() or not is_session_dir(d) or not d.is_dir():
             continue
         try:
             d.rmdir()

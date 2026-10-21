@@ -209,32 +209,42 @@ class BrowserSessionManager:
                 context = await self._browser.new_context(**ctx_kwargs)
             else:
                 raise
-        page = await context.new_page()
-        sid = f"sess_{uuid.uuid4().hex[:8]}"
-        session = BrowserSession(context=context, page=page,
-                                 last_active=time.monotonic(),
-                                 allow_private=allow_private,
-                                 owner=owner,
-                                 dialog_policy=dialog_policy,
-                                 storage_state_path=storage_state_path)
-        await context.route("**/*", lambda route: _ssrf_route_handler(session, route))
-        # Bind on the context, not the page: popups opened by the page inherit
-        # these handlers, so a dialog in a popup can't hang the session either.
         try:
-            context.on("dialog", lambda dialog: asyncio.ensure_future(
-                _dialog_handler(session, dialog)))
-            context.on("console", lambda msg: _console_handler(session, msg))
-            context.on("weberror", lambda err: _page_error_handler(session, err))
-        except Exception as e:
-            # Older Playwright builds expose these on Page only; fall back so a
-            # missing context-level event never blocks session creation.
-            logger.debug("context event binding failed, falling back to page: {}", e)
-            page.on("dialog", lambda dialog: asyncio.ensure_future(
-                _dialog_handler(session, dialog)))
-            page.on("console", lambda msg: _console_handler(session, msg))
-            page.on("pageerror", lambda err: _page_error_handler(session, err))
-        self._sessions[sid] = session
-        return sid
+            page = await context.new_page()
+            sid = f"sess_{uuid.uuid4().hex[:8]}"
+            session = BrowserSession(context=context, page=page,
+                                     last_active=time.monotonic(),
+                                     allow_private=allow_private,
+                                     owner=owner,
+                                     dialog_policy=dialog_policy,
+                                     storage_state_path=storage_state_path)
+            await context.route("**/*", lambda route: _ssrf_route_handler(session, route))
+            # Bind on the context, not the page: popups opened by the page inherit
+            # these handlers, so a dialog in a popup can't hang the session either.
+            try:
+                context.on("dialog", lambda dialog: asyncio.ensure_future(
+                    _dialog_handler(session, dialog)))
+                context.on("console", lambda msg: _console_handler(session, msg))
+                context.on("weberror", lambda err: _page_error_handler(session, err))
+            except Exception as e:
+                # Older Playwright builds expose these on Page only; fall back so a
+                # missing context-level event never blocks session creation.
+                logger.debug("context event binding failed, falling back to page: {}", e)
+                page.on("dialog", lambda dialog: asyncio.ensure_future(
+                    _dialog_handler(session, dialog)))
+                page.on("console", lambda msg: _console_handler(session, msg))
+                page.on("pageerror", lambda err: _page_error_handler(session, err))
+            self._sessions[sid] = session
+            return sid
+        except BaseException:
+            # Until registration succeeds, no close/reaper path knows this
+            # context exists. The setup operation must reclaim it on errors or
+            # cancellation rather than leak an uncounted Chromium context.
+            try:
+                await context.close()
+            except Exception as e:
+                logger.debug("partial browser context close failed: {}", e)
+            raise
 
     def get(self, session_id: str, owner: str = "") -> BrowserSession | None:
         """Look up a live session. When *owner* is non-empty it must match the

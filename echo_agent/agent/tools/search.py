@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 import time
 from pathlib import Path
 from typing import Any
+
+import regex as re
 
 from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 from echo_agent.security.path_policy import check_read, resolve_path
@@ -108,9 +109,27 @@ class SearchFilesTool(Tool):
             dirnames[:] = [
                 d for d in dirnames
                 if d not in _SKIP_DIRS and not self._is_spill(base / d, spill_root)
+                and self._can_read(base / d)
             ]
             for name in filenames:
-                yield base / name
+                candidate = base / name
+                if self._can_read(candidate):
+                    yield candidate
+
+    def _can_read(self, candidate: Path) -> bool:
+        """Directory admission alone cannot authorize files reached below it.
+
+        Apply the direct-read policy to each resolved file too: ordinary files
+        may be credentials, and file symlinks are followed by read_text even
+        when os.walk(followlinks=False) rejects directory symlinks.
+        """
+        try:
+            resolved = candidate.resolve()
+            if self._restrict and not resolved.is_relative_to(self._workspace):
+                return False
+            return check_read(str(candidate), str(self._workspace), spill_root=self._spill_root) is None
+        except (OSError, ValueError, RuntimeError):
+            return False
 
     @staticmethod
     def _is_spill(candidate: Path, spill_root: Path | None) -> bool:
@@ -165,7 +184,17 @@ class SearchFilesTool(Tool):
             except (OSError, PermissionError):
                 continue
             for i, line in enumerate(text.splitlines(), 1):
-                if regex.search(line):
+                remaining = deadline - time.monotonic()
+                try:
+                    if remaining <= 0:
+                        raise TimeoutError
+                    matched = regex.search(line, timeout=remaining)
+                except TimeoutError:
+                    return ToolResult(
+                        success=False, error="Regex search exceeded the request time budget.",
+                        error_kind="timeout", metadata={"scanned": scanned},
+                    )
+                if matched:
                     results.append(f"{self._rel(path)}:{i}: {line.rstrip()[:200]}")
                     if len(results) >= limit:
                         truncated = True

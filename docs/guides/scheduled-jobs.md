@@ -24,7 +24,7 @@ scheduler:
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `enabled` | `true` | 是否启用定时任务系统 |
-| `max_concurrent_jobs` | `10` | 最大并发任务数，超出时排队等待 |
+| `max_concurrent_jobs` | `10` | 覆盖完整执行周期的并发上限；手动超限返回冲突，周期触发稍后再检查 |
 
 ## 创建定时任务
 
@@ -35,8 +35,10 @@ tool: cronjob
 action: create
 name: "daily-report"
 schedule: "0 9 * * *"
-task: "生成每日汇总报告并发送到通知通道"
+command: "生成每日汇总报告并发送到通知通道"
 ```
+
+Cron 表达式按服务器本地时区解释；部署需固定时区并检查下次执行时间。普通五字段表达式的日/月会周期重复，不能当作一次性日期提醒。
 
 ### Cron 表达式语法
 
@@ -77,17 +79,7 @@ task: "生成每日汇总报告并发送到通知通道"
 
 ### 审批流程
 
-创建新任务需要满足以下条件之一：
-
-1. **人工审批**（`approval_source="human"`）— 维护者在 Dashboard 或交互中确认
-2. **预授权标志**（`cron_authorized=true`）— 在 `ToolExecutionContext` 中设置
-
-```yaml
-# ToolExecutionContext 示例
-context:
-  cron_authorized: true
-  unattended: false
-```
+交互式 `cronjob create/authorize` 必须经过危险工具的人类批准；批准绑定展示的指令、计划与投递目标。管理员也可通过 Dashboard/REST 明确设置 `authorize_unattended: true`。`cron_authorized` 是调度器从已签发授权派生的内部信号，不是调用者可以填入上下文来取得授权的入口。
 
 授权按**单个任务**显式授予，没有通道级的自动授权规则——新建的定时任务默认未授权，不会因为属于 cron 通道就自动获得执行许可。
 
@@ -118,16 +110,16 @@ echo-agent cron revoke <job_id>       # 撤销授权
 
 当 `unattended=true` 时，审批流程有所不同：
 
-- 若同时设置 `cron_authorized=true`，任务可自动创建
-- 若未设置 `cron_authorized`，任务创建将被拒绝（不会挂起等待人工审批）
+- 已授权的任务可按许可执行 WRITE/EXEC 操作
+- 创建新定时任务等 DANGEROUS 操作仍拒绝；无人值守任务不能自我扩权或挂起等待无人处理的审批
 
 ## Cron 通道
 
-Cron 通道是定时任务的专用执行环境：
+定时任务通过内部 CRON 事件进入同一个 Runtime。指定来源会话或投递目标时，结果发往该会话；不能解析目标时会使用 `cron:<job_id>` 上下文，明确记录“无法投递”，不会把丢弃输出算作成功。
 
-- 每个定时任务绑定到一个 cron 通道
-- 任务输出和状态信息写入该通道
-- 通道提供任务执行的隔离上下文
+每次触发先持久化唯一 `run_id`，再入队。`queued` 只代表入队；`completed` 表示回合完成且投递处理成功，仍须结合渠道回执能力判断对端确认。预算耗尽、模型错误后的不完整回答记为 `incomplete`，投递失败记为 `error`。历史保留最近 100 次运行，迟到回写只影响它对应的运行，不能覆盖较新的结果。
+
+同一任务在本次运行尚未结束时不会再次触发，包括手动触发。重启时，上一个进程留下的排队/执行记录记为 `interrupted`，不会盲目重新执行可能已产生副作用的操作；检查结果和外部系统后再决定是否手动重试。定时计划会从当前时间重新计算，不补跑所有错过的周期。
 
 ## Dashboard Cron 页面
 
@@ -148,28 +140,16 @@ tool: cronjob
 action: list
 ```
 
-### 暂停任务
+### 暂停与恢复
 
-```yaml
-tool: cronjob
-action: pause
-name: "daily-report"
-```
-
-### 恢复任务
-
-```yaml
-tool: cronjob
-action: resume
-name: "daily-report"
-```
+在 Dashboard Cron 页操作，或使用管理员 `PUT {api_prefix}/cron/{id}` 更新 `enabled`。`cronjob` 的动作只有 create/list/delete/trigger/authorize/revoke，没有 pause/resume。暂停不撤销已执行的外部副作用；在飞执行与新触发冲突应检查 run 历史。
 
 ### 删除任务
 
 ```yaml
 tool: cronjob
 action: delete
-name: "daily-report"
+job_id: "<id returned by create/list>"
 ```
 
 ## 使用场景示例
@@ -181,7 +161,7 @@ tool: cronjob
 action: create
 name: "daily-summary"
 schedule: "0 9 * * *"
-task: "汇总过去 24 小时的通道活动，生成摘要报告"
+command: "汇总过去 24 小时的通道活动，生成摘要报告"
 ```
 
 ### 定期清理
@@ -191,7 +171,7 @@ tool: cronjob
 action: create
 name: "weekly-cleanup"
 schedule: "0 3 * * 0"
-task: "清理超过 30 天的临时文件和过期缓存"
+command: "清理超过 30 天的临时文件和过期缓存"
 ```
 
 ### 健康检查
@@ -201,7 +181,7 @@ tool: cronjob
 action: create
 name: "health-check"
 schedule: "*/30 * * * *"
-task: "检查所有后端服务连通性，异常时发送告警"
+command: "检查所有后端服务连通性，异常时发送告警"
 ```
 
 ### 数据同步
@@ -211,7 +191,7 @@ tool: cronjob
 action: create
 name: "sync-external-data"
 schedule: "0 */4 * * *"
-task: "从外部 API 同步最新数据到本地存储"
+command: "从外部 API 同步最新数据到本地存储"
 ```
 
 ## 安全建议

@@ -192,6 +192,7 @@ def _explain(key: str, config_path, workspace) -> int:
     print(f"配置项 / key:   {info.path}  ({info.snake_path})")
     print(f"类型 / type:    {info.type_str}")
     print(f"默认值 / def:   {info.default!r}")
+    current = redact({key.rsplit(".", 1)[-1]: current})[key.rsplit(".", 1)[-1]]
     print(f"当前值 / now:   {current!r}")
     if info.choices:
         print(f"可选 / choices: {'|'.join(info.choices)}")
@@ -205,16 +206,16 @@ def _explain(key: str, config_path, workspace) -> int:
 
 def _validate(config_path, workspace) -> int:
     config_file = resolve_config_file(config_path=config_path, search_dir=workspace)
-    raw: dict[str, Any] = {}
-    if config_file and Path(config_file).exists():
-        with open(config_file, encoding="utf-8") as fh:
-            raw = yaml.safe_load(fh) or {}
     # 1) schema 校验
     try:
         load_config(config_path=config_file)
     except ConfigError as e:
         print(f"配置非法 / invalid:\n{e}")
         return 1
+    raw: dict[str, Any] = {}
+    if config_file and Path(config_file).exists():
+        with open(config_file, encoding="utf-8") as fh:
+            raw = yaml.safe_load(fh) or {}
     rc = 0
     known = known_paths()
     containers = _container_keys()

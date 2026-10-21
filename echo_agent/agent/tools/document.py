@@ -47,7 +47,8 @@ class ReadDocumentTool(Tool):
                 resolved.relative_to(self._workspace)
             except ValueError:
                 return ToolResult(success=False, error=f"Path {path} is outside workspace {self._workspace}")
-        res = extract(path, max_chars=params.get("max_chars"), unit=params.get("unit"))
+        target = resolve_path(path, self._workspace)
+        res = extract(target, max_chars=params.get("max_chars"), unit=params.get("unit"))
         if not res.text:
             err = res.meta.get("error") or f"no extractable text ({res.meta.get('format')})"
             return ToolResult(success=False, error=err, metadata=res.meta)

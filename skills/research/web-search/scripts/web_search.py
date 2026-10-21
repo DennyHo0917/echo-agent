@@ -5,21 +5,25 @@ import argparse
 import json
 from echo_agent.dependencies.skill_require import require  # noqa: E402
 
-require("skill.web-search")
-
-from duckduckgo_search import DDGS  # noqa: E402
-
-
 def search_text(query: str, max_results: int = 5, region: str = "wt-wt"):
+    require("skill.web-search")
+    from duckduckgo_search import DDGS
+
     results = DDGS().text(query, max_results=max_results, region=region)
     return results
 
 
 def search_news(query: str, max_results: int = 5):
+    require("skill.web-search")
+    from duckduckgo_search import DDGS
+
     return DDGS().news(query, max_results=max_results)
 
 
 def search_images(query: str, max_results: int = 5):
+    require("skill.web-search")
+    from duckduckgo_search import DDGS
+
     return DDGS().images(query, max_results=max_results)
 
 

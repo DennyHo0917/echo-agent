@@ -108,7 +108,7 @@ def test_admin_csrf_rejects_cross_site_under_empty_allowlist():
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).parent))
-    from test_gateway_server import _make_gateway
+    from tests.test_gateway_server import _make_gateway
     gw, _ = _make_gateway()
     # Empty allowlist (default). A malicious cross-site browser POST must be
     # rejected even though allowed_origins is unset.
@@ -123,7 +123,7 @@ def test_admin_csrf_allows_same_origin_and_native():
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).parent))
-    from test_gateway_server import _make_gateway
+    from tests.test_gateway_server import _make_gateway
     gw, _ = _make_gateway()
     # Same-origin playground fetch and native clients (no browser headers) pass.
     assert gw._check_csrf(

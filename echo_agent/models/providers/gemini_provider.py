@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import uuid
+from contextlib import aclosing
 from typing import Any
 
 from loguru import logger
@@ -49,24 +51,32 @@ class _GeminiAggregate:
     """
 
     def __init__(self, chunks: list[Any]):
+        self.native_parts: list[dict[str, Any]] = []
         text_buf: list[str] = []
+        thought_buf: list[str] = []
         fc_parts: list[_AggregatePart] = []
         usage: Any = None
         finish_reason: Any = None
+        prompt_feedback: Any = None
+        had_candidate = False
 
         for chunk in chunks:
+            prompt_feedback = getattr(chunk, "prompt_feedback", None) or prompt_feedback
             chunk_usage = getattr(chunk, "usage_metadata", None)
             if chunk_usage:
                 usage = chunk_usage
-            for candidate in getattr(chunk, "candidates", None) or []:
+            for candidate in (getattr(chunk, "candidates", None) or [])[:1]:
+                had_candidate = True
                 candidate_finish = getattr(candidate, "finish_reason", None)
                 if candidate_finish is not None:
                     finish_reason = candidate_finish
                 content = getattr(candidate, "content", None)
                 for part in getattr(content, "parts", None) or []:
                     text = getattr(part, "text", "") or ""
+                    if callable(getattr(part, "model_dump", None)):
+                        self.native_parts.append(part.model_dump(mode="json", exclude_none=True))
                     if text:
-                        text_buf.append(text)
+                        (thought_buf if getattr(part, "thought", False) is True else text_buf).append(text)
                     fc = getattr(part, "function_call", None)
                     if fc:
                         fc_parts.append(_AggregatePart(function_call=fc))
@@ -74,9 +84,14 @@ class _GeminiAggregate:
         parts: list[_AggregatePart] = []
         if text_buf:
             parts.append(_AggregatePart(text="".join(text_buf)))
+        if thought_buf:
+            thought_part = _AggregatePart(text="".join(thought_buf))
+            thought_part.thought = True
+            parts.append(thought_part)
         parts.extend(fc_parts)
 
-        self.candidates = [_AggregateCandidate(parts, finish_reason)]
+        self.candidates = [_AggregateCandidate(parts, finish_reason)] if had_candidate else []
+        self.prompt_feedback = prompt_feedback
         if usage is not None:
             self.usage_metadata = usage
 
@@ -86,126 +101,88 @@ class GeminiProvider(LLMProvider):
     def __init__(self, api_key: str = "", api_base: str = "", default_model: str = "", **kwargs: Any):
         super().__init__(api_key=api_key, api_base=api_base)
         self._default_model = default_model
+        self._extra_headers = dict(kwargs.get("extra_headers", {}))
         self._client = self._build_client()
 
     def _build_client(self) -> Any:
         try:
-            import google.generativeai as genai
-        except ImportError:
-            raise ImportError("google-generativeai required: pip install echo-agent[gemini]")
-        if self.api_key:
-            genai.configure(api_key=self.api_key)
-        return genai
-
-    async def chat(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        model: str | None = None,
-        tool_choice: str | dict | None = None,
-        **kwargs: Any,
-    ) -> LLMResponse:
-        target = model or self._default_model
-        try:
-            return await self._do_chat(target, messages, tools, **kwargs)
-        except Exception as e:
-            logger.error("Gemini API error: {}", e)
-            return LLMResponse(content=f"Error: {e}", finish_reason="error")
+            from google import genai
+        except ImportError as exc:
+            raise ImportError("google-genai required: pip install echo-agent[gemini]") from exc
+        options: dict[str, Any] = {}
+        if self.api_base:
+            options["base_url"] = self.api_base.rstrip("/")
+        if self._extra_headers:
+            options["headers"] = self._extra_headers
+        # Return the async owner itself: generic credential retirement and
+        # provider shutdown can aclose it without leaking a synchronous client.
+        return genai.Client(api_key=self.api_key, http_options=options or None, vertexai=False).aio
 
     def get_default_model(self) -> str:
         return self._default_model
 
-    async def chat_stream(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        model: str | None = None,
-        tool_choice: str | dict | None = None,
-        on_delta: StreamDeltaCallback | None = None,
-        on_reasoning: StreamReasoningCallback | None = None,
-        **kwargs: Any,
-    ) -> LLMResponse:
-        import asyncio
-
-        # Gemini's streaming API exposes no separate reasoning channel, so the
-        # callback is accepted and dropped. Declaring it explicitly keeps it out
-        # of **kwargs, which flows into the generation config below.
-        _ = on_reasoning
-
-        target = model or self._default_model
-        genai = self._client
-        system_text, contents = self._convert_messages(messages)
-        gen_config = {
+    def _request(self, messages, tools, model, tool_choice, kwargs):
+        system, contents = self._convert_messages(messages)
+        config: dict[str, Any] = {
             "temperature": kwargs.get("temperature", self.generation.temperature),
             "max_output_tokens": kwargs.get("max_tokens", self.generation.max_tokens),
+            "top_p": kwargs.get("top_p", self.generation.top_p),
+            # Only Echo's ToolRegistry may execute tools, after authorization.
+            "automatic_function_calling": {"disable": True},
         }
-        model_kwargs: dict[str, Any] = {"model_name": target, "generation_config": gen_config}
-        if system_text:
-            model_kwargs["system_instruction"] = system_text
-        gemini_model = genai.GenerativeModel(**model_kwargs)
+        if system:
+            config["system_instruction"] = system
+        if tools:
+            config["tools"] = self._convert_tools(tools)
+            modes = {"auto": "AUTO", "none": "NONE", "required": "ANY"}
+            if isinstance(tool_choice, dict):
+                name = tool_choice.get("function", {}).get("name")
+                if not name:
+                    raise ValueError("Gemini tool_choice requires a function name")
+                choice = {"mode": "ANY", "allowed_function_names": [name]}
+            else:
+                if tool_choice is not None and tool_choice not in modes:
+                    raise ValueError("Unsupported Gemini tool_choice")
+                choice = {"mode": modes.get(tool_choice, "AUTO")}
+            config["tool_config"] = {"function_calling_config": choice}
+        for key in ("response_mime_type", "response_json_schema"):
+            if key in kwargs:
+                config[key] = kwargs[key]
+        return {"model": model or self._default_model, "contents": contents, "config": config}
 
-        send_kwargs: dict[str, Any] = {"content": contents, "stream": True}
-        tool_defs = self._convert_tools(tools) if tools else None
-        if tool_defs:
-            send_kwargs["tools"] = tool_defs
-
-        loop = asyncio.get_running_loop()
+    async def chat(self, messages, tools=None, model=None, tool_choice=None, **kwargs) -> LLMResponse:
         try:
-            # The Gemini SDK is synchronous: kick off the streaming call and pull
-            # each chunk via run_in_executor so the event loop stays responsive
-            # and deltas reach on_delta as they arrive (true streaming).
-            stream = await loop.run_in_executor(None, lambda: gemini_model.generate_content(**send_kwargs))
-            chunks: list[Any] = []
-            sentinel = object()
-            it = iter(stream)
-            while True:
-                chunk = await loop.run_in_executor(None, lambda: next(it, sentinel))
-                if chunk is sentinel:
-                    break
-                chunks.append(chunk)
-                # `chunk.text` is a property that can raise (not just be missing)
-                # on non-pure-text chunks carrying a function_call, so guard the
-                # access itself: treat any failure as empty text and skip it.
-                try:
-                    text = getattr(chunk, "text", "") or ""
-                except Exception:
-                    text = ""
-                if text:
-                    await _invoke_stream_callback(on_delta, text)
-            resp = _GeminiAggregate(chunks)
-            return self._parse_response(resp, target)
-        except Exception as e:
-            logger.error("Gemini stream error: {}", e)
-            return LLMResponse(content=f"Error: {e}", finish_reason="error")
+            request = self._request(messages, tools, model, tool_choice, kwargs)
+            response = await self._client.models.generate_content(**request)
+            return self._parse_response(response, request["model"])
+        except Exception as exc:
+            logger.error("Gemini API error: {}", exc)
+            return LLMResponse(content=f"Error: {exc}", finish_reason="error")
 
-    async def _do_chat(
-        self, model_name: str, messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None, **kwargs: Any,
+    async def chat_stream(
+        self, messages, tools=None, model=None, tool_choice=None,
+        on_delta: StreamDeltaCallback | None = None,
+        on_reasoning: StreamReasoningCallback | None = None, **kwargs,
     ) -> LLMResponse:
-        import asyncio
-        genai = self._client
-
-        system_text, contents = self._convert_messages(messages)
-        gen_config = {
-            "temperature": kwargs.get("temperature", self.generation.temperature),
-            "max_output_tokens": kwargs.get("max_tokens", self.generation.max_tokens),
-        }
-
-        model_kwargs: dict[str, Any] = {"model_name": model_name, "generation_config": gen_config}
-        if system_text:
-            model_kwargs["system_instruction"] = system_text
-
-        gemini_model = genai.GenerativeModel(**model_kwargs)
-
-        tool_defs = self._convert_tools(tools) if tools else None
-        send_kwargs: dict[str, Any] = {"content": contents}
-        if tool_defs:
-            send_kwargs["tools"] = tool_defs
-
-        resp = await asyncio.get_running_loop().run_in_executor(
-            None, lambda: gemini_model.generate_content(**send_kwargs),
-        )
-        return self._parse_response(resp, model_name)
+        try:
+            request = self._request(messages, tools, model, tool_choice, kwargs)
+            stream = await self._client.models.generate_content_stream(**request)
+            chunks = []
+            # Closing the response iterator on cancellation also closes its
+            # HTTP stream; no background executor thread can continue billing.
+            async with aclosing(stream):
+                async for chunk in stream:
+                    chunks.append(chunk)
+                    for candidate in (getattr(chunk, "candidates", None) or [])[:1]:
+                        for part in getattr(getattr(candidate, "content", None), "parts", None) or []:
+                            text = getattr(part, "text", None)
+                            if text:
+                                callback = on_reasoning if getattr(part, "thought", False) else on_delta
+                                await _invoke_stream_callback(callback, text)
+            return self._parse_response(_GeminiAggregate(chunks), request["model"])
+        except Exception as exc:
+            logger.error("Gemini stream error: {}", exc)
+            return LLMResponse(content=f"Error: {exc}", finish_reason="error")
 
     def _convert_messages(self, messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
         system_parts: list[str] = []
@@ -229,6 +206,11 @@ class GeminiProvider(LLMProvider):
             gemini_role = "model" if role == "assistant" else "user"
             parts: list[dict[str, Any]] = []
 
+            native = (msg.get("provider_content") or {}).get("gemini")
+            if role == "assistant" and native:
+                contents.append({"role": "model", "parts": native})
+                continue
+
             if content:
                 if isinstance(content, list):
                     for block in content:
@@ -242,6 +224,8 @@ class GeminiProvider(LLMProvider):
                                     mime = mime.replace("data:", "")
                                     _, _, b64 = raw.partition(",")
                                     parts.append({"inline_data": {"mime_type": mime, "data": b64}})
+                                elif url:
+                                    raise ValueError("Gemini images must use inline data URLs; remote URLs are not fetched")
                         else:
                             parts.append({"text": str(block)})
                 else:
@@ -254,13 +238,18 @@ class GeminiProvider(LLMProvider):
                     args = json.loads(args_str) if isinstance(args_str, str) else args_str
                 except (json.JSONDecodeError, TypeError):
                     args = {}
-                parts.append({"function_call": {"name": fn.get("name", ""), "args": args}})
+                call = {"name": fn.get("name", ""), "args": args}
+                if tc.get("id"):
+                    call["id"] = tc["id"]
+                parts.append({"function_call": call})
 
             if role == "tool":
                 parts = [{"function_response": {
                     "name": msg.get("name", ""),
                     "response": {"result": content},
                 }}]
+                if msg.get("tool_call_id"):
+                    parts[0]["function_response"]["id"] = msg["tool_call_id"]
                 gemini_role = "user"
 
             if parts:
@@ -278,45 +267,62 @@ class GeminiProvider(LLMProvider):
             decl: dict[str, Any] = {"name": fn.get("name", ""), "description": fn.get("description", "")}
             params = fn.get("parameters")
             if params:
-                decl["parameters"] = params
+                decl["parameters_json_schema"] = params
             declarations.append(decl)
         return [{"function_declarations": declarations}]
 
     def _parse_response(self, resp: Any, model: str) -> LLMResponse:
         text_parts: list[str] = []
+        reasoning: list[str] = []
         tool_calls: list[ToolCallRequest] = []
-        raw_finish: Any = None
-
-        for candidate in resp.candidates:
-            candidate_finish = getattr(candidate, "finish_reason", None)
-            if candidate_finish is not None:
-                raw_finish = candidate_finish
-            for part in candidate.content.parts:
-                if hasattr(part, "text") and part.text:
-                    text_parts.append(part.text)
-                if hasattr(part, "function_call") and part.function_call:
-                    fc = part.function_call
-                    args = dict(fc.args) if fc.args else {}
+        native_parts: list[dict[str, Any]] = []
+        candidates = getattr(resp, "candidates", None) or []
+        raw_finish = None
+        # candidate_count is one; never merge alternative candidates into a
+        # single answer or execute mutually exclusive alternatives' tools.
+        for candidate in candidates[:1]:
+            raw_finish = getattr(candidate, "finish_reason", None)
+            for part in getattr(getattr(candidate, "content", None), "parts", None) or []:
+                if callable(getattr(part, "model_dump", None)):
+                    native_parts.append(part.model_dump(mode="json", exclude_none=True))
+                text = getattr(part, "text", None)
+                if text:
+                    (reasoning if getattr(part, "thought", False) is True else text_parts).append(text)
+                fc = getattr(part, "function_call", None)
+                if fc:
+                    call_id = getattr(fc, "id", None)
                     tool_calls.append(ToolCallRequest(
-                        id=f"call_{fc.name}",
-                        name=fc.name,
-                        arguments=args,
+                        id=call_id if isinstance(call_id, str) and call_id else f"call_{uuid.uuid4().hex}",
+                        name=fc.name, arguments=dict(fc.args or {}),
                     ))
-
-        finish = "tool_calls" if tool_calls else self._normalize_finish_reason(raw_finish)
+        finish = self._normalize_finish_reason(raw_finish)
+        feedback = getattr(resp, "prompt_feedback", None)
+        if not candidates and getattr(feedback, "block_reason", None):
+            finish = "content_filter"
+        elif not candidates:
+            finish = "error"
+        if tool_calls and finish == "stop":
+            finish = "tool_calls"
         usage: dict[str, int] = {}
-        if hasattr(resp, "usage_metadata") and resp.usage_metadata:
-            um = resp.usage_metadata
+        um = getattr(resp, "usage_metadata", None)
+        if um:
             usage["prompt_tokens"] = getattr(um, "prompt_token_count", 0) or 0
             usage["completion_tokens"] = getattr(um, "candidates_token_count", 0) or 0
-
+            # Some SDK test doubles expose arbitrary attributes; counts must be ints.
+            for source, dest in (("thoughts_token_count", "reasoning_tokens"),
+                                 ("cached_content_token_count", "cache_read_input_tokens")):
+                value = getattr(um, source, None)
+                if isinstance(value, int) and value:
+                    usage[dest] = value
+        aggregated_parts = getattr(resp, "native_parts", None)
+        if isinstance(aggregated_parts, list) and aggregated_parts:
+            native_parts = aggregated_parts
         return LLMResponse(
             content="\n".join(text_parts) if text_parts else None,
-            tool_calls=tool_calls,
-            finish_reason=finish,
-            raw_finish_reason=str(raw_finish or ""),
-            usage=usage,
-            model=model,
+            reasoning_content="\n".join(reasoning) if reasoning else None,
+            tool_calls=tool_calls, finish_reason=finish,
+            raw_finish_reason=str(raw_finish or ""), usage=usage, model=model,
+            provider_content={"gemini": native_parts} if native_parts else None,
         )
 
     @staticmethod
@@ -333,4 +339,6 @@ class GeminiProvider(LLMProvider):
             "spii", "image_safety", "image_prohibited_content",
         }:
             return "content_filter"
+        if value in {"malformed_function_call", "unexpected_tool_call", "other", "no_image"}:
+            return "error"
         return "stop"

@@ -267,6 +267,30 @@ def migrate_heartbeat_config(data: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+def resolve_config_data(
+    raw: dict[str, Any], *, overrides: dict[str, Any] | None = None,
+    base: dict[str, Any] | None = None,
+) -> Config:
+    """Resolve YAML with the same defaults, environment and startup precedence.
+
+    ``base`` supports embedded runtimes constructed directly from a Config;
+    file-loaded runtimes always start with the packaged defaults instead.
+    """
+    from copy import deepcopy
+    from echo_agent.config.profile_defaults import apply_profile_cognitive_defaults
+
+    data = _canonicalize_keys(Config, base if base is not None else _load_yaml_file(_PACKAGED_DEFAULT_CONFIG))
+    data = _deep_merge(data, _canonicalize_keys(Config, raw))
+    data = _deep_merge(data, _env_overrides())
+    startup = _canonicalize_keys(Config, overrides or {})
+    data = _deep_merge(data, startup)
+    data = migrate_heartbeat_config(apply_profile_cognitive_defaults(data))
+    config = Config.model_validate(data)
+    config._source_loaded = True
+    config._startup_overrides = deepcopy(startup)
+    return config
+
+
 def load_config(
     config_path: str | Path | None = None,
     overrides: dict[str, Any] | None = None,
@@ -275,32 +299,18 @@ def load_config(
     # accepts camelCase aliases too, and an un-normalized merge would keep both
     # spellings of the same setting as separate keys — letting the alias win and
     # silently dropping the override. See _canonicalize_keys.
-    data: dict[str, Any] = _canonicalize_keys(Config, _load_yaml_file(_PACKAGED_DEFAULT_CONFIG))
-
     path = resolve_config_file(config_path)
+    raw: dict[str, Any] = {}
     if path and path.exists():
         # debug, not info: load_config runs on every CLI invocation (status,
         # cost, deps...) and loguru's default sink is stderr, so an info line
         # here leaks into otherwise-clean command output. Gateway logging is
         # unaffected — only this per-command load message is quieted.
         logger.debug("Loading config from {}", path)
-        data = _deep_merge(data, _canonicalize_keys(Config, _load_yaml_file(path)))
-
-    env = _env_overrides()
-    if env:
-        data = _deep_merge(data, env)
-
-    if overrides:
-        data = _deep_merge(data, _canonicalize_keys(Config, overrides))
-
-    from echo_agent.config.profile_defaults import apply_profile_cognitive_defaults
-
-    data = apply_profile_cognitive_defaults(data)
-
-    data = migrate_heartbeat_config(data)
+        raw = _load_yaml_file(path)
 
     try:
-        return Config(**data)
+        return resolve_config_data(raw, overrides=overrides)
     except Exception as e:
         # Translate pydantic validation errors into something a user editing
         # YAML can act on, instead of a raw traceback.

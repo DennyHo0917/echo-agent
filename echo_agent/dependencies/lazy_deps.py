@@ -109,13 +109,13 @@ SKILL_DEPS: dict[str, tuple[str, ...]] = {
     "skill.reminder": ("croniter>=1.4",),
     "skill.calendar": ("caldav>=1.3", "icalendar>=5.0"),
     "skill.notion-sync": (),  # uses stdlib urllib only
-    "skill.ocr-document": ("pymupdf>=1.24", "python-docx>=1.1", "Pillow>=13.0.0,<14", "pytesseract>=0.3"),
-    "skill.ocr-document.pdf": ("pymupdf>=1.24",),
+    "skill.ocr-document": ("pymupdf>=1.24,<2", "python-docx>=1.1", "Pillow>=13.0.0,<14", "pytesseract>=0.3"),
+    "skill.ocr-document.pdf": ("pymupdf>=1.24,<2",),
     "skill.ocr-document.docx": ("python-docx>=1.1",),
     "skill.ocr-document.image": ("Pillow>=13.0.0,<14", "pytesseract>=0.3"),
 
     # ─── Inbound document parsing (read side) ─────────────────────────────
-    "media.document": ("pymupdf>=1.24", "python-docx>=1.1", "openpyxl>=3.1", "python-pptx>=1.0"),
+    "media.document": ("pymupdf>=1.24,<2", "python-docx>=1.1", "openpyxl>=3.1", "python-pptx>=1.0"),
 
     # ─── Utility skills ───────────────────────────────────────────────────
     "skill.file-convert": ("pyyaml>=6.0",),
@@ -157,7 +157,7 @@ SKILL_DEPS: dict[str, tuple[str, ...]] = {
     "provider.openai": ("openai>=1.30",),
     "provider.anthropic": ("anthropic>=0.40",),
     "provider.bedrock": ("anthropic>=0.40", "boto3>=1.34"),
-    "provider.gemini": ("google-generativeai>=0.8",),
+    "provider.gemini": ("google-genai>=2.32,<3",),
 }
 
 # =============================================================================

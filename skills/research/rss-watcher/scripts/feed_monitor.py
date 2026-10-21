@@ -7,10 +7,6 @@ import sqlite3
 from echo_agent.dependencies.skill_require import require  # noqa: E402
 from pathlib import Path
 
-require("skill.rss-watcher")
-
-import feedparser  # noqa: E402
-
 try:
     import yaml
 except ImportError:
@@ -43,6 +39,9 @@ def entry_id(entry):
 
 
 def check_feeds(feeds=None, max_items=10):
+    require("skill.rss-watcher")
+    import feedparser
+
     if feeds is None:
         feeds = load_feeds()
     conn = get_db()

@@ -42,7 +42,7 @@ Software development assistance skills.
 | github-ops | Perform GitHub operations through the `gh` CLI | Requires `gh` with an authenticated account |
 | plan | Break down complex tasks into executable step-by-step plans | — |
 | skill-creator | Assist in creating new SKILL.md skill files | — |
-| workflow-chain | Chain multiple skills into automated workflows | — |
+| workflow-chain | Run reviewed JSON command stages; the Agent composes skills | — |
 
 !!! warning "code-runner is not a security sandbox"
     This skill runs a Python subprocess on the host. A temporary working directory and pattern checks do not prevent access to host files or provide reliable network isolation. Do not run untrusted code with it.
@@ -122,7 +122,7 @@ Daily efficiency and office automation skills.
 | weather | Query real-time weather and forecasts for specified cities | — |
 
 !!! tip "daily-briefing is a composite skill"
-    `daily-briefing` automatically calls `calendar`, `weather`, `reminder`, and other skills to aggregate information. Ensure related skills have their environment variables configured for the most complete daily briefing.
+    The instructions guide the Agent in composing weather, calendar, reminders and news. The bundled script itself reports date, weather and available local reminders; it neither invokes other skills nor registers scheduled delivery. The Agent must compose the full workflow explicitly; periodic execution uses authorized Cron.
 
 ---
 

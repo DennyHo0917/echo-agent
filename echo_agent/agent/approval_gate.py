@@ -124,6 +124,15 @@ class ApprovalGate:
         exec auto-approve while the same call from the parent needed consent.
         """
         approval_cfg = self._config.permissions.approval
+        # An explicit operator denial is a hard rule, including for low-risk
+        # tools, trusted/CLI callers, unattended grants and approval mode off.
+        # Checking only in the manual flow let every earlier convenience pass
+        # silently override the configured deny list.
+        if tool_name in approval_cfg.auto_deny:
+            return ApprovalCheck(ToolResult(
+                success=False,
+                error=f"Tool '{tool_name}' auto-denied by approval policy.",
+            ))
         # A nested call carries the parent's channel for *provenance* (denial
         # messages, unattended fallback), but it must never inherit that
         # channel's pass-through privileges. Both cli_auto_approve and

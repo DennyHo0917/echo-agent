@@ -53,6 +53,7 @@ def _make_engine(
     engine.run_evolution = AsyncMock(return_value=run_evolution_result or EvolutionRun(triggered_by="manual"))
 
     store = MagicMock()
+    store.init_schema = AsyncMock()
     store.get_candidate = AsyncMock(side_effect=lambda cid: (candidate_lookup or {}).get(cid))
     store.update_candidate = AsyncMock()
     engine.store = store
@@ -194,7 +195,10 @@ async def test_status_action_prints_summary_and_latest_run(capsys):
     assert "candidates pending      : 2" in out
     assert "alpha until 2026-05-22T10:00:00" in out
     assert "run_abc" in out
-    engine.start.assert_awaited_once()
+    # A read-only status query must initialize persistence without starting
+    # automatic threshold/scheduled evolution or trajectory retention cleanup.
+    engine.store.init_schema.assert_awaited_once()
+    engine.start.assert_not_awaited()
     engine.stop.assert_awaited_once()
 
 

@@ -494,6 +494,7 @@ class GatewayServer:
         app.router.add_get("/meta", self._handle_meta)
         app.router.add_post(f"{prefix}/message", self._handle_message)
         app.router.add_get(f"{prefix}/health", self._handle_health)
+        app.router.add_get(f"{prefix}/ready", self._handle_ready)
         from echo_agent.plugins.runtime import RuntimeExtension
         extension = getattr(self._agent_loop, "_runtime_extension", None)
         if isinstance(extension, RuntimeExtension):
@@ -780,7 +781,7 @@ class GatewayServer:
             # Prevent path traversal
             try:
                 file_path = file_path.resolve()
-                if file_path.is_file() and str(file_path).startswith(str(dashboard_dir.resolve())):
+                if file_path.is_file() and file_path.is_relative_to(dashboard_dir.resolve()):
                     return web.FileResponse(file_path)
             except (OSError, ValueError):
                 # Invalid/unresolvable asset paths deliberately fall through to
@@ -1123,6 +1124,25 @@ class GatewayServer:
             return web.FileResponse(path)
         return web.Response(text="Gateway playground not found.", status=404)
 
+    @staticmethod
+    def _inbound_input_error(body: Any) -> str | None:
+        """Validate shared HTTP/WS fields before identity or queue operations."""
+        if not isinstance(body, dict):
+            return "JSON body must be an object"
+        for key in ("platform", "user_id", "chat_id", "text"):
+            if key == "platform" and body.get(key) is None:
+                continue
+            if key in body and not isinstance(body[key], str):
+                return f"{key} must be a string"
+        for key in ("wait", "is_group"):
+            if key in body and not isinstance(body[key], bool):
+                return f"{key} must be a boolean"
+        if "media_urls" in body:
+            urls = body["media_urls"]
+            if not isinstance(urls, list) or any(not isinstance(url, str) or not url.strip() for url in urls):
+                return "media_urls must be a list of non-empty URL strings"
+        return None
+
     async def _handle_message(self, request: web.Request) -> web.Response:
         """处理 HTTP 消息请求：认证 → 限流 → 会话管理 → 事件分发。"""
         guard = self._require_api_token(request, action="message")
@@ -1138,8 +1158,9 @@ class GatewayServer:
             body = await request.json()
         except json.JSONDecodeError:
             return web.json_response({"error": "invalid JSON"}, status=400)
-        if not isinstance(body, dict):
-            return web.json_response({"error": "JSON body must be an object"}, status=400)
+        input_error = self._inbound_input_error(body)
+        if input_error:
+            return web.json_response({"error": input_error}, status=400)
         try:
             idempotency_key = self._idempotency_key(request, body)
         except ValueError as e:
@@ -1155,7 +1176,13 @@ class GatewayServer:
         media_urls = body.get("media_urls", [])
         wait = bool(body.get("wait", False))
         is_group = bool(body.get("is_group", False))
-        timeout_seconds = max(1, min(int(body.get("timeout_seconds", 180)), 600))
+        try:
+            timeout = body.get("timeout_seconds", 180)
+            if isinstance(timeout, bool):
+                raise ValueError("boolean is not a timeout")
+            timeout_seconds = max(1, min(int(timeout), 600))
+        except (TypeError, ValueError, OverflowError):
+            return web.json_response({"error": "timeout_seconds must be an integer"}, status=400)
 
         if not text and not media_urls:
             return web.json_response({"error": "text or media_urls required"}, status=400)
@@ -1612,6 +1639,10 @@ class GatewayServer:
         code = 200 if status["status"] != "unhealthy" else 503
         return web.json_response(status, status=code)
 
+    async def _handle_ready(self, request: web.Request) -> web.Response:
+        status = self.health.readiness()
+        return web.json_response(status, status=200 if status["ready"] else 503)
+
     async def _handle_list_sessions(self, request: web.Request) -> web.Response:
         guard = self._require_admin_token(request, action="list_sessions")
         if guard is not None:
@@ -1704,6 +1735,7 @@ class GatewayServer:
             {
                 "api_prefix": self._config.api_prefix,
                 "ws_path": "/ws/dashboard",
+                "interactive_ws_path": self._config.ws_path,
                 "version": __version__,
                 "auth_required": self._tokens_configured(),
             }
@@ -1812,6 +1844,10 @@ class GatewayServer:
                     except json.JSONDecodeError:
                         await websocket.send_json({"error": "invalid JSON"})
                         continue
+                    input_error = self._inbound_input_error(data)
+                    if input_error:
+                        await websocket.send_json({"type": "error", "error": input_error})
+                        continue
 
                     # Per-message isolation: a failure while handling one
                     # message (audit, content build, publish, session ops…)
@@ -1822,6 +1858,9 @@ class GatewayServer:
                         msg_type = data.get("type", "message")
 
                         if msg_type == "auth":
+                            if auth_deadline.authenticated:
+                                await websocket.send_json({"type": "error", "error": "already authenticated"})
+                                continue
                             # Folded up-front so every downstream use — the
                             # authorization check, the session key, the delivery
                             # key, the rate-limit bucket, the audit trail and the

@@ -3,24 +3,24 @@
 Workflow for a candidate:
 
   1. Run the baseline eval dataset against the *current* skill library.
-  2. Snapshot the user skills directory to a temp backup.
-  3. Apply the candidate's change in-place on user skills.
+  2. Snapshot the user skills directory into an isolated candidate library.
+  3. Apply the candidate's change only to that isolated library.
   4. Run the same eval dataset again.
   5. Compare reports:
-       - regression beyond ``regression_threshold`` → reject + restore
-       - strict improvement → promote (keep applied change)
-       - tie (when ``require_strict_improvement``) → reject + restore
+       - regression beyond ``regression_threshold`` → reject
+       - strict improvement → apply the verified change to the live library
+       - tie (when ``require_strict_improvement``) → reject
   6. Persist the candidate's eval reports + status into the TrajectoryStore.
 
-The gate never mutates the SkillStore object itself — it works exclusively
-through the on-disk user directory, which the SkillStore reads on every
-call. This keeps the AgentLoop's references intact and makes a failure
-recovery a simple directory move.
+Evaluation never applies an unapproved candidate to the live library. Cancelling
+the evaluation or losing the process therefore cannot leave a candidate online.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import inspect
 import os
 import shutil
 import tempfile
@@ -41,6 +41,7 @@ except ImportError:  # pragma: no cover - non-POSIX platforms
 
 from echo_agent.evolution.types import SkillCandidate
 from echo_agent.skills.store import SkillStore
+from echo_agent.evolution.validation import validate_candidate_identity
 
 if TYPE_CHECKING:
     from echo_agent.evaluation.dataset import EvalDataset
@@ -48,7 +49,10 @@ if TYPE_CHECKING:
     from echo_agent.evolution.store import TrajectoryStore
 
 
-EvalRunnerFactory = Callable[[], "EvalRunner"]
+# Production factories accept ``skill_store=`` so the baseline/candidate
+# snapshots are bound before constructing a runtime. Legacy no-argument
+# factories remain accepted for integrations using deterministic evaluators.
+EvalRunnerFactory = Callable[..., "EvalRunner"]
 
 
 @dataclass
@@ -87,6 +91,7 @@ class PromotionGate:
         self._min_eval_cases = int(min_eval_cases)
         self._eval_lock = asyncio.Lock()
         self._metrics: dict[str, int] = {"promoted": 0, "rejected": 0, "regressions": 0}
+        self._evaluation_skill_store: SkillStore | None = None
 
         from echo_agent.evolution.validation import log_config_warnings
         from echo_agent.config.schema import EvolutionConfig
@@ -114,10 +119,24 @@ class PromotionGate:
     async def evaluate(self, candidate: SkillCandidate) -> PromotionDecision:
         """Run the full A/B test cycle on a single candidate."""
         async with self._eval_lock:
-            file_lock_fd = self._acquire_user_dir_lock()
+            # LOCK_NB plus an async retry avoids blocking the event loop when
+            # another gate/process is holding the same library lock.
+            while True:
+                try:
+                    file_lock_fd = self._acquire_user_dir_lock()
+                    break
+                except BlockingIOError:
+                    await asyncio.sleep(0.05)
             try:
                 return await self._evaluate_locked(candidate)
+            except asyncio.CancelledError:
+                if candidate.status == "evaluating":
+                    candidate.status = "rejected"
+                    candidate.rejected_reason = "evaluation cancelled; live skills unchanged"
+                    await self._store.update_candidate(candidate)
+                raise
             finally:
+                self._evaluation_skill_store = None
                 self._release_user_dir_lock(file_lock_fd)
 
     def _acquire_user_dir_lock(self) -> Any:
@@ -131,16 +150,20 @@ class PromotionGate:
         user_dir = self._skill_store.user_dir
         try:
             user_dir.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            return None
+        except OSError as error:
+            raise RuntimeError(f"Cannot prepare skill evaluation lock: {error}") from error
         lock_path = user_dir / ".evolution_eval.lock"
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return fd
+        except BlockingIOError:
+            os.close(fd)
+            raise
         except OSError as e:
-            logger.warning("Failed to take eval lock on {}: {}", user_dir, e)
-            return None
+            if "fd" in locals():
+                os.close(fd)
+            raise RuntimeError(f"Failed to take eval lock on {user_dir}: {e}") from e
 
     def _release_user_dir_lock(self, fd: Any) -> None:
         if fd is None or not _HAS_FCNTL:
@@ -174,112 +197,104 @@ class PromotionGate:
                 with_candidate=None,
             )
 
-        # 1. baseline
-        try:
-            baseline_report = await self._run_eval(dataset)
-        except Exception as e:
-            candidate.status = "rejected"
-            candidate.rejected_reason = f"baseline eval failed: {e}"
-            await self._store.update_candidate(candidate)
-            return PromotionDecision(
-                promoted=False,
-                reason=candidate.rejected_reason,
-                baseline=None,
-                with_candidate=None,
-            )
-        candidate.eval_baseline = self._summarize(baseline_report)
-
-        # 2. snapshot
         user_dir = self._skill_store.user_dir
-        backup_dir, backup_token = self._snapshot_user_dir(user_dir)
+        if candidate.operation == "disable" and not hasattr(self._skill_store, "_disabled"):
+            return await self._reject(candidate, "skill_store has no _disabled attribute")
+        initial_fingerprint = self._library_fingerprint(self._skill_store)
+        with tempfile.TemporaryDirectory(prefix="evolution-eval-") as staging:
+            staged_dir = Path(staging) / "skills"
+            from echo_agent.evaluation.runtime import copy_skill_tree
 
-        try:
+            try:
+                copy_skill_tree(user_dir, staged_dir)
+                builtin_dir = self._skill_store._builtin_dir
+                if builtin_dir is not None and builtin_dir.exists():
+                    copy_skill_tree(builtin_dir, Path(staging) / "builtin_skills")
+                    builtin_dir = Path(staging) / "builtin_skills"
+                external_dirs = []
+                for index, source in enumerate(self._skill_store._external_dirs):
+                    if source.exists():
+                        target = Path(staging) / f"external_skills_{index}"
+                        copy_skill_tree(source, target)
+                        external_dirs.append(target)
+            except (OSError, ValueError) as error:
+                return await self._reject(candidate, f"skill snapshot failed: {error}")
+            staged = SkillStore(
+                user_dir=staged_dir,
+                builtin_dir=builtin_dir,
+                external_dirs=external_dirs,
+                disabled=list(self._skill_store._disabled),
+            )
+            self._evaluation_skill_store = staged
+            try:
+                baseline_report = await self._run_eval(dataset)
+            except Exception as e:
+                return await self._reject(candidate, f"baseline eval failed: {e}")
+            candidate.eval_baseline = self._summarize(baseline_report)
+
+            applied = self._apply_candidate(candidate, staged_dir)
+            if applied is not True:
+                return await self._reject(candidate, str(applied or "could not apply candidate"))
+            try:
+                with_report = await self._run_eval(dataset)
+            except Exception as e:
+                return await self._reject(candidate, f"candidate eval failed: {e}")
+            candidate.eval_with_candidate = self._summarize(with_report)
+            decision = self._decide(baseline_report, with_report)
+            self._evaluation_skill_store = None
+
+            if not decision.promoted:
+                if "regression" in decision.reason.lower():
+                    self._metrics["regressions"] += 1
+                return await self._reject(candidate, decision.reason)
+            if self._review_required:
+                candidate.status = "needs_review"
+                candidate.rejected_reason = "candidate_review_required: held for human approval"
+                await self._store.update_candidate(candidate)
+                return PromotionDecision(False, candidate.rejected_reason,
+                                         candidate.eval_baseline, candidate.eval_with_candidate)
+
+            # A user may legitimately edit skills while a long eval runs. Never
+            # overwrite that edit, or promote against a library we did not test.
+            if self._library_fingerprint(self._skill_store) != initial_fingerprint:
+                return await self._reject(candidate, "live skill library changed during evaluation; retry required")
+            backup_dir, backup_token = self._snapshot_user_dir(user_dir)
             applied = self._apply_candidate(candidate, user_dir)
             if applied is not True:
-                reason = applied or "could not apply candidate"
-                # A failed apply may have left partial changes on disk —
-                # restore (which also cleans up the backup dir and any pending
-                # disable bookkeeping) instead of leaking both.
-                self._restore_backup(user_dir, backup_dir)
-                candidate.status = "rejected"
-                candidate.rejected_reason = reason
-                candidate.eval_with_candidate = None
-                await self._store.update_candidate(candidate)
-                return PromotionDecision(
-                    promoted=False,
-                    reason=reason,
-                    baseline=candidate.eval_baseline,
-                    with_candidate=None,
-                )
-
-            with_report = await self._run_eval(dataset)
-        except Exception as e:
-            self._restore_backup(user_dir, backup_dir)
-            candidate.status = "rejected"
-            candidate.rejected_reason = f"candidate eval failed: {e}"
-            await self._store.update_candidate(candidate)
-            return PromotionDecision(
-                promoted=False,
-                reason=candidate.rejected_reason,
-                baseline=candidate.eval_baseline,
-                with_candidate=None,
-            )
-
-        candidate.eval_with_candidate = self._summarize(with_report)
-
-        decision = self._decide(baseline_report, with_report)
-
-        logger.info(
-            "Evolution gate decision for '{}': promoted={} reason='{}' "
-            "baseline_pass_rate={} candidate_pass_rate={}",
-            candidate.skill_name,
-            decision.promoted,
-            decision.reason,
-            decision.baseline.get("pass_rate") if decision.baseline else None,
-            decision.with_candidate.get("pass_rate") if decision.with_candidate else None,
-        )
-
-        if decision.promoted and not self._review_required:
-            self._metrics["promoted"] += 1
-            candidate.status = "promoted"
-            candidate.promoted_at = datetime.now().isoformat()
-            if candidate.operation == "disable" and hasattr(self._skill_store, "persist_disable"):
-                # The in-memory disable applied during eval evaporates on
-                # restart — make the promoted decision durable.
+                self._cleanup_backup(backup_dir)
+                return await self._reject(candidate, str(applied or "promotion apply failed"))
+            if candidate.operation == "disable":
                 self._skill_store.persist_disable(candidate.skill_name)
-            # Keep the pre-change snapshot for rollback instead of deleting it:
-            # the inverse-patch rollback is best-effort and create-rollback
-            # otherwise has nothing to restore supporting files from.
             self._retain_backup(backup_dir, candidate, backup_token)
             self._pending_disable_skill = None
             self._disable_was_present = False
+            candidate.status = "promoted"
+            candidate.promoted_at = datetime.now().isoformat()
             await self._store.update_candidate(candidate)
+            self._metrics["promoted"] += 1
+            logger.info("Evolution promoted '{}' after isolated evaluation: {}", candidate.skill_name, decision.reason)
             return decision
 
-        if decision.promoted and self._review_required:
-            # Even though the gate would have promoted, hold the change for
-            # human sign-off. Restore the on-disk state and store the eval
-            # results for ``echo-agent evolution list-candidates``.
-            self._restore_backup(user_dir, backup_dir)
-            candidate.status = "needs_review"
-            candidate.rejected_reason = "candidate_review_required: held for human approval"
-            await self._store.update_candidate(candidate)
-            return PromotionDecision(
-                promoted=False,
-                reason=candidate.rejected_reason,
-                baseline=candidate.eval_baseline,
-                with_candidate=candidate.eval_with_candidate,
-            )
-
-        # rejected — restore
-        self._restore_backup(user_dir, backup_dir)
+    async def _reject(self, candidate: SkillCandidate, reason: str) -> PromotionDecision:
         candidate.status = "rejected"
-        candidate.rejected_reason = decision.reason
-        if "regression" in decision.reason.lower():
-            self._metrics["regressions"] += 1
+        candidate.rejected_reason = reason
         self._metrics["rejected"] += 1
         await self._store.update_candidate(candidate)
-        return decision
+        return PromotionDecision(False, reason, candidate.eval_baseline, candidate.eval_with_candidate)
+
+    @staticmethod
+    def _library_fingerprint(store: SkillStore) -> str:
+        digest = hashlib.sha256()
+        digest.update(repr(sorted(store._disabled)).encode())
+        # Hash supporting files as well as SKILL.md. Ignore the advisory lock
+        # (which contains no library content and is owned by this gate).
+        for root, _writable in store._all_roots():
+            digest.update(str(root).encode())
+            for path in sorted(root.rglob("*")):
+                if path.is_file() and path.name != ".evolution_eval.lock":
+                    digest.update(str(path.relative_to(root)).encode())
+                    digest.update(path.read_bytes())
+        return digest.hexdigest()
 
     # ── Candidate application ────────────────────────────────────────────────
 
@@ -301,12 +316,19 @@ class PromotionGate:
         return None
 
     def _apply_candidate(self, candidate: SkillCandidate, user_dir: Path) -> bool | str:
+        skill_store = self._evaluation_skill_store or self._skill_store
+        # A user directory takes precedence over builtins. Letting a candidate
+        # create ``foo/SKILL.md`` with ``name: protected`` (or rename a patched
+        # skill) would shadow a protected skill without ever writing its path.
+        identity_error = validate_candidate_identity(candidate, skill_store)
+        if identity_error:
+            return identity_error
         # Protected-skill gate (fail-closed): builtin/external skills live
         # outside user_dir and must never be patched or disabled by evolution.
         # disable takes the in-memory ``_disabled`` bypass that skips the
         # store's read-only check, so block it here before the candidate eval
         # ever runs. ``create`` always lands in user_dir, so it is exempt.
-        if candidate.operation in ("disable", "patch") and self._skill_store.is_protected(
+        if candidate.operation in ("disable", "patch") and skill_store.is_protected(
             candidate.skill_name
         ):
             return (
@@ -319,7 +341,7 @@ class PromotionGate:
             return scan_error
         try:
             if candidate.operation == "create":
-                err = self._skill_store.create_skill(
+                err = skill_store.create_skill(
                     candidate.skill_name,
                     candidate.proposed_content,
                 )
@@ -328,7 +350,7 @@ class PromotionGate:
                 return True
 
             if candidate.operation == "patch":
-                err = self._skill_store.patch_skill(
+                err = skill_store.patch_skill(
                     candidate.skill_name,
                     candidate.proposed_patch_old,
                     candidate.proposed_patch_new,
@@ -341,7 +363,7 @@ class PromotionGate:
                 # Mark the skill as disabled in this SkillStore instance for the
                 # duration of the eval run. ``_disabled`` is consulted in
                 # ``list_all`` so the eval will run as if the skill is gone.
-                disabled = getattr(self._skill_store, "_disabled", None)
+                disabled = getattr(skill_store, "_disabled", None)
                 if disabled is None:
                     return "skill_store has no _disabled attribute"
                 # Remember whether this skill was already disabled by user
@@ -349,7 +371,7 @@ class PromotionGate:
                 # wiping the user's configured disable list.
                 self._disable_was_present = candidate.skill_name in disabled
                 self._pending_disable_skill = candidate.skill_name
-                disabled.add(candidate.skill_name)
+                disabled.update(skill_store.resolved_names(candidate.skill_name))
                 return True
 
             return f"unknown operation '{candidate.operation}'"
@@ -560,7 +582,12 @@ class PromotionGate:
     # ── Eval execution ───────────────────────────────────────────────────────
 
     async def _run_eval(self, dataset: "EvalDataset") -> "EvalReport":
-        runner = self._make_runner()
+        try:
+            inspect.signature(self._make_runner).bind(skill_store=self._evaluation_skill_store)
+        except TypeError:
+            runner = self._make_runner()
+        else:
+            runner = self._make_runner(skill_store=self._evaluation_skill_store)
         return await runner.run_dataset(dataset)
 
     async def _resolve_dataset(self) -> "EvalDataset | None":

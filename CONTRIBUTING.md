@@ -25,7 +25,7 @@ pip install -e ".[all,dev]"
 PR 前请确保 lint 和测试都通过，CI 会在每个 PR 上跑同样的检查：
 
 ```bash
-ruff check .
+ruff check . --extend-exclude client
 pytest
 ```
 

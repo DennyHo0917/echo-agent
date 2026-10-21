@@ -663,14 +663,15 @@ class ToolCallBlock(ExpandableBlock):
         if self.result_text:
             # Edit-family tools return a diff — color it so added/removed lines
             # read at a glance. Everything else keeps the compact text preview.
-            looks_like_diff = "\n" in self.result_text and any(
-                ln[:1] in "+-@" for ln in self.result_text.splitlines()
+            safe_result = mask_sensitive_strings(self.result_text)
+            looks_like_diff = "\n" in safe_result and any(
+                ln[:1] in "+-@" for ln in safe_result.splitlines()
             )
             if self.tool_name in _DIFF_TOOLS and looks_like_diff:
-                rows.append((t("attach.ui.changes"), colorize_diff(self.result_text).split("\n")))
+                rows.append((t("attach.ui.changes"), colorize_diff(safe_result).split("\n")))
             else:
                 rows.append(
-                    (t("attach.ui.result"), [_markup_safe(_clip(self.result_text, 200))])
+                    (t("attach.ui.result"), [_markup_safe(_clip(safe_result, 200))])
                 )
         for idx, (label, body) in enumerate(rows):
             elbow, cont = self.child_rail(last=idx == len(rows) - 1)

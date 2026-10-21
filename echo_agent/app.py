@@ -47,6 +47,7 @@ class BootstrapResult:
     health: Any = None
     instance_lock: Any = None
     task_dispatcher: Any = None
+    providers: list[Any] = field(default_factory=list)
 
 
 async def bootstrap(
@@ -146,11 +147,14 @@ async def bootstrap(
             default_context_window=config.session.context_window_tokens,
         )
         provider: LLMProvider | None = None
+        providers: list[LLMProvider] = []
         provider_errors: list[str] = []
 
         for pc in config.models.providers:
             try:
                 p = create_provider(pc, default_model=config.models.default_model)
+                providers.append(p)
+                stack.push_async_callback(_rollback, f"provider:{pc.name}", p.aclose)
                 router.register_provider(pc.name, p)
                 if provider is None:
                     provider = p
@@ -238,6 +242,7 @@ async def bootstrap(
             task_manager,
             owner_id=dispatcher_owner_id,
             interrupt_manager=agent.interrupt,
+            workflow_engine=workflow_engine,
         )
         # Release the concurrency slot only when the whole turn reaches a terminal
         # state (decision d), not merely after the inbound publish.
@@ -281,6 +286,7 @@ async def bootstrap(
             try:
                 from echo_agent.evaluation.dataset import EvalDataset
                 from echo_agent.evaluation.runner import EvalRunner
+                from echo_agent.evaluation.runtime import IsolatedEvalRunner
                 from echo_agent.evolution.engine import EvolutionEngine
 
                 dataset_path = ws / config.evolution.eval_dataset_path
@@ -290,12 +296,14 @@ async def bootstrap(
                 def _load_eval_dataset() -> EvalDataset:
                     return EvalDataset.from_path(dataset_path)
 
-                def _make_eval_runner() -> EvalRunner:
-                    return EvalRunner(
-                        agent,
+                def _make_eval_runner(*, skill_store: Any) -> EvalRunner:
+                    return IsolatedEvalRunner(
+                        config=config,
+                        skill_store=skill_store,
                         parallel=config.evolution.eval_parallel,
                         timeout=config.evolution.eval_timeout_seconds,
                         provider=provider,
+                        providers=router.registered_providers(),
                     )
 
                 reflection_module = None
@@ -378,6 +386,7 @@ async def bootstrap(
             health=health,
             instance_lock=instance_lock,
             task_dispatcher=task_dispatcher,
+            providers=providers,
         )
         # Success: hand ownership to AppRuntime. pop_all() detaches the
         # registered teardowns so exiting this block is a no-op; AppRuntime.stop()
@@ -445,7 +454,9 @@ class AppRuntime:
         self._ctx = ctx
         self._gateway: Any = None
         self._started = False
-        self._instance_lock: Any = None
+        self._closed = False
+        self._stop_task: asyncio.Task | None = None
+        self._instance_lock: Any = getattr(ctx, "instance_lock", None)
 
     @property
     def gateway(self) -> Any:
@@ -535,8 +546,18 @@ class AppRuntime:
         return True
 
     async def stop(self) -> None:
-        if not self._started:
+        from echo_agent.storage.sqlite import _settle_cleanup
+
+        if self._stop_task is None:
+            self._stop_task = asyncio.create_task(self._stop_components())
+        deferred = await _settle_cleanup(self._stop_task)
+        if deferred is not None:
+            raise deferred
+
+    async def _stop_components(self) -> None:
+        if self._closed:
             return
+        self._closed = True
         self._started = False
         ctx = self._ctx
         await self._stop_step("health", ctx.health.stop())
@@ -556,6 +577,11 @@ class AppRuntime:
             self._gateway = None
         await self._stop_step("channels", ctx.channels.stop_all())
         await self._stop_step("agent", ctx.agent.stop())
+        closed: set[int] = set()
+        for provider in getattr(ctx, "providers", []):
+            if id(provider) not in closed:
+                closed.add(id(provider))
+                await self._stop_step("provider", provider.aclose())
         await self._stop_step("storage", ctx.storage.close())
         if self._instance_lock is not None:
             try:
@@ -595,7 +621,7 @@ async def run(config_path: str | None = None, workspace: str | None = None, forc
         )
     except InstanceLockError as e:
         logger.error(e.message)
-        return
+        raise SystemExit(1)
 
     logger.info("Echo Agent starting — workspace: {}", ctx.workspace)
 
@@ -604,7 +630,7 @@ async def run(config_path: str | None = None, workspace: str | None = None, forc
     watchdog = build_loop_watchdog(ctx)
     try:
         if not await runtime.start():
-            return
+            raise SystemExit(1)
         if watchdog is not None:
             watchdog.start()
         logger.info("Echo Agent ready — channels: {}", ctx.channels.active_channels)
@@ -744,7 +770,7 @@ async def run_gateway(
     bind_err = _gateway_port_in_use(pre_host, pre_port)
     if bind_err:
         logger.error(bind_err)
-        return
+        raise SystemExit(1)
 
     # Mark this process as the gateway so `echo-agent gateway stop/restart`
     # issued from inside it (agent exec tool) can refuse — with the service
@@ -759,6 +785,10 @@ async def run_gateway(
     # these after bootstrap would leave already-registered high-risk tools in the
     # registry (see _gateway_profile_override).
     overrides.setdefault("gateway", {})["enabled"] = True
+    if host:
+        overrides["gateway"]["host"] = host
+    if port is not None:
+        overrides["gateway"]["port"] = port
     profile_override = _gateway_profile_override(config_path)
     if profile_override:
         overrides["security"] = {**overrides.get("security", {}), **profile_override["security"]}
@@ -776,7 +806,7 @@ async def run_gateway(
         )
     except InstanceLockError as e:
         logger.error(e.message)
-        return
+        raise SystemExit(1)
     # Build the SPA if this process is the kind that may: an interactive
     # foreground gateway. A supervised one returns None here and serves whatever
     # artifact exists, because blocking a systemd unit on `pnpm build` would keep
@@ -790,21 +820,13 @@ async def run_gateway(
     except Exception as e:  # noqa: BLE001 - never block startup on the frontend
         logger.warning("Dashboard build skipped: {}", e)
 
-    ctx.config.gateway.enabled = True
-    if host:
-        ctx.config.gateway.host = host
-    # Apply --port when provided, including 0 (ephemeral). Only None means
-    # "not passed"; `if port` would drop the dynamic-port request.
-    if port is not None:
-        ctx.config.gateway.port = port
-
     install_signal_handler(shutdown)
     runtime = AppRuntime(ctx)
     watchdog = build_loop_watchdog(ctx)
 
     try:
         if not await runtime.start():
-            return
+            raise SystemExit(1)
         if watchdog is not None:
             watchdog.start()
         logger.info("Gateway listening on {}:{}", ctx.config.gateway.host, ctx.config.gateway.port)

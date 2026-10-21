@@ -12,7 +12,10 @@ interface ConfigResponse {
   memory?: { enabled?: boolean };
   knowledge?: { enabled?: boolean; auto_index?: boolean };
   cost?: { enabled?: boolean; daily_budget_usd?: number; soft_threshold_ratio?: number };
-  _meta?: { config_path?: string; editable_roots?: string[] };
+  _meta?: {
+    config_path?: string; editable_roots?: string[]; restart_required?: boolean;
+    pending_paths?: string[]; running?: Record<string, unknown>; config_error?: string | null; managed_paths?: string[];
+  };
   [key: string]: unknown;
 }
 
@@ -33,7 +36,16 @@ export function Config() {
   const isAdmin = useIsAdmin();
   const { data, loading, error, refetch } = useApi<ConfigResponse>(isAdmin === true ? "/config" : null);
   const [draft, setDraft] = useState<Draft>(EMPTY);
-  const [restartRequired, setRestartRequired] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const managed = (path: string) => !!data?._meta?.managed_paths?.some(
+    (item) => path === item || path.startsWith(`${item}.`) || item.startsWith(`${path}.`),
+  );
+  const labels: Record<string, string> = {
+    "ui.locale": "locale", "observability.log_level": "logLevel", "observability.trace_enabled": "traceEnabled",
+    "memory.enabled": "memoryEnabled", "knowledge.enabled": "knowledgeEnabled", "knowledge.auto_index": "autoIndex",
+    "cost.enabled": "costEnabled", "cost.daily_budget_usd": "dailyBudget", "cost.soft_threshold_ratio": "softThreshold",
+  };
+  const fieldLabel = (path: string) => labels[path] ? t(`fields.${labels[path]}`) : path;
 
   useEffect(() => {
     if (!data) return;
@@ -54,24 +66,30 @@ export function Config() {
 
   const save = async (event: React.FormEvent) => {
     event.preventDefault();
-    const ok = await runMutation(
+    if (saving) return;
+    const changes = Object.fromEntries(Object.entries({
+      "ui.locale": draft.locale,
+      "observability.log_level": draft.logLevel,
+      "observability.trace_enabled": draft.traceEnabled,
+      "memory.enabled": draft.memoryEnabled,
+      "knowledge.enabled": draft.knowledgeEnabled,
+      "knowledge.auto_index": draft.autoIndex,
+      "cost.enabled": draft.costEnabled,
+      "cost.daily_budget_usd": Number(draft.dailyBudget),
+      "cost.soft_threshold_ratio": Number(draft.softThreshold),
+    }).filter(([path]) => !managed(path)));
+    if (!Object.keys(changes).length) return;
+    setSaving(true);
+    try {
+      const ok = await runMutation(
       () => apiFetch("/config", {
         method: "PATCH",
-        body: JSON.stringify({ changes: {
-          "ui.locale": draft.locale,
-          "observability.log_level": draft.logLevel,
-          "observability.trace_enabled": draft.traceEnabled,
-          "memory.enabled": draft.memoryEnabled,
-          "knowledge.enabled": draft.knowledgeEnabled,
-          "knowledge.auto_index": draft.autoIndex,
-          "cost.enabled": draft.costEnabled,
-          "cost.daily_budget_usd": Number(draft.dailyBudget),
-          "cost.soft_threshold_ratio": Number(draft.softThreshold),
-        } }),
+        body: JSON.stringify({ changes }),
       }),
       { success: t("saveSuccess"), error: t("saveFailed") },
     );
-    if (ok) { setRestartRequired(true); refetch(); }
+      if (ok) refetch();
+    } finally { setSaving(false); }
   };
 
   if (isAdmin === false) return <div className="bg-amber-50 text-amber-700 rounded-lg p-4 text-sm">{t("common:adminOnly")}</div>;
@@ -83,26 +101,31 @@ export function Config() {
       <div><h1 className="text-lg font-bold">{t("title")}</h1>
         <p className="text-xs text-gray-500 font-mono break-all">{data._meta?.config_path}</p></div>
     </div>
-    {restartRequired && <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3 text-sm" role="status">
-      <RotateCw size={16} className="mt-0.5 shrink-0" /><span>{t("restartRequired")}</span>
+    {data._meta?.config_error && <div className="bg-red-50 text-red-600 rounded-lg p-3 text-sm" role="alert">{data._meta.config_error}</div>}
+    {!!data._meta?.managed_paths?.length && <div className="bg-blue-50 text-blue-800 rounded-lg p-3 text-sm">
+      {t("managedSettings")}
+    </div>}
+    {data._meta?.restart_required && <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3 text-sm" role="status">
+      <RotateCw size={16} className="mt-0.5 shrink-0" /><div><p>{t("restartRequired")}</p>
+        <p className="text-xs mt-1 break-all">{data._meta.pending_paths?.map(fieldLabel).join(", ")}</p></div>
     </div>}
     <form onSubmit={save} className="space-y-4">
       <Section title={t("sections.interface")}>
-        <Select label={t("fields.locale")} value={draft.locale} onChange={(value) => set("locale", value)} options={["auto", "zh", "en"]} />
-        <Select label={t("fields.logLevel")} value={draft.logLevel} onChange={(value) => set("logLevel", value)} options={["DEBUG", "INFO", "WARNING", "ERROR"]} />
-        <Toggle label={t("fields.traceEnabled")} checked={draft.traceEnabled} onChange={(value) => set("traceEnabled", value)} />
+        <Select label={t("fields.locale")} disabled={managed("ui.locale")} value={draft.locale} onChange={(value) => set("locale", value)} options={["auto", "zh", "en"]} />
+        <Select label={t("fields.logLevel")} disabled={managed("observability.log_level")} value={draft.logLevel} onChange={(value) => set("logLevel", value)} options={["DEBUG", "INFO", "WARNING", "ERROR"]} />
+        <Toggle label={t("fields.traceEnabled")} disabled={managed("observability.trace_enabled")} checked={draft.traceEnabled} onChange={(value) => set("traceEnabled", value)} />
       </Section>
       <Section title={t("sections.capabilities")}>
-        <Toggle label={t("fields.memoryEnabled")} checked={draft.memoryEnabled} onChange={(value) => set("memoryEnabled", value)} />
-        <Toggle label={t("fields.knowledgeEnabled")} checked={draft.knowledgeEnabled} onChange={(value) => set("knowledgeEnabled", value)} />
-        <Toggle label={t("fields.autoIndex")} checked={draft.autoIndex} onChange={(value) => set("autoIndex", value)} />
+        <Toggle label={t("fields.memoryEnabled")} disabled={managed("memory.enabled")} checked={draft.memoryEnabled} onChange={(value) => set("memoryEnabled", value)} />
+        <Toggle label={t("fields.knowledgeEnabled")} disabled={managed("knowledge.enabled")} checked={draft.knowledgeEnabled} onChange={(value) => set("knowledgeEnabled", value)} />
+        <Toggle label={t("fields.autoIndex")} disabled={managed("knowledge.auto_index")} checked={draft.autoIndex} onChange={(value) => set("autoIndex", value)} />
       </Section>
       <Section title={t("sections.cost")}>
-        <Toggle label={t("fields.costEnabled")} checked={draft.costEnabled} onChange={(value) => set("costEnabled", value)} />
-        <NumberField label={t("fields.dailyBudget")} value={draft.dailyBudget} min="0" step="0.01" onChange={(value) => set("dailyBudget", value)} />
-        <NumberField label={t("fields.softThreshold")} value={draft.softThreshold} min="0" max="1" step="0.05" onChange={(value) => set("softThreshold", value)} />
+        <Toggle label={t("fields.costEnabled")} disabled={managed("cost.enabled")} checked={draft.costEnabled} onChange={(value) => set("costEnabled", value)} />
+        <NumberField label={t("fields.dailyBudget")} disabled={managed("cost.daily_budget_usd")} value={draft.dailyBudget} min="0" step="0.01" onChange={(value) => set("dailyBudget", value)} />
+        <NumberField label={t("fields.softThreshold")} disabled={managed("cost.soft_threshold_ratio")} value={draft.softThreshold} min="0" max="1" step="0.05" onChange={(value) => set("softThreshold", value)} />
       </Section>
-      <button type="submit" className="flex items-center gap-1.5 bg-blue-600 text-white rounded px-4 py-2 text-sm hover:bg-blue-700">
+      <button type="submit" disabled={saving || !!data._meta?.config_error || Object.keys(labels).every(managed)} className="flex items-center gap-1.5 bg-blue-600 text-white rounded px-4 py-2 text-sm hover:bg-blue-700 disabled:opacity-50">
         <Save size={15} /> {t("save")}
       </button>
     </form>
@@ -118,19 +141,19 @@ function Section({ title, children }: { title: string; children: React.ReactNode
     <legend className="font-medium text-sm px-1">{title}</legend>{children}
   </fieldset>;
 }
-function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
+function Toggle({ label, checked, onChange, disabled }: { label: string; checked: boolean; onChange: (value: boolean) => void; disabled?: boolean }) {
   return <label className="flex items-center justify-between gap-3 text-sm"><span>{label}</span>
-    <button type="button" role="switch" aria-checked={checked} onClick={() => onChange(!checked)}
-      className={`w-10 h-5 rounded-full ${checked ? "bg-blue-600" : "bg-gray-300"}`}>
+    <button type="button" role="switch" aria-label={label} aria-checked={checked} disabled={disabled} onClick={() => onChange(!checked)}
+      className={`w-10 h-5 rounded-full disabled:opacity-50 ${checked ? "bg-blue-600" : "bg-gray-300"}`}>
       <span className={`block w-4 h-4 bg-white rounded-full shadow transition-transform ${checked ? "translate-x-5" : "translate-x-0.5"}`} />
     </button></label>;
 }
-function Select({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (value: string) => void }) {
+function Select({ label, value, options, onChange, disabled }: { label: string; value: string; options: string[]; onChange: (value: string) => void; disabled?: boolean }) {
   return <label className="text-sm"><span className="block text-gray-600 mb-1">{label}</span>
-    <select value={value} onChange={(event) => onChange(event.target.value)} className="border rounded px-2 py-1.5 w-full">{options.map((option) => <option key={option}>{option}</option>)}</select>
+    <select value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} className="border rounded px-2 py-1.5 w-full">{options.map((option) => <option key={option}>{option}</option>)}</select>
   </label>;
 }
-function NumberField({ label, value, onChange, ...props }: { label: string; value: string; onChange: (value: string) => void; min?: string; max?: string; step?: string }) {
+function NumberField({ label, value, onChange, ...props }: { label: string; value: string; onChange: (value: string) => void; min?: string; max?: string; step?: string; disabled?: boolean }) {
   return <label className="text-sm"><span className="block text-gray-600 mb-1">{label}</span>
     <input type="number" value={value} onChange={(event) => onChange(event.target.value)} {...props} className="border rounded px-2 py-1.5 w-full" />
   </label>;

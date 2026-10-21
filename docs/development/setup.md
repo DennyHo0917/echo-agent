@@ -54,7 +54,7 @@ pip install -e ".[all,dev]"
 
 ```bash
 # 代码检查
-ruff check .
+ruff check . --extend-exclude client
 
 # 运行测试
 python -m pytest tests/ -v --cov

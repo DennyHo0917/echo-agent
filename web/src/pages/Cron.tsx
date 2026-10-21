@@ -18,6 +18,7 @@ export interface CronJob {
   enabled: boolean;
   status: string;
   last_status: string;
+  active_run_id?: string;
   next_run_ms: number | null;
   config_valid?: boolean;
   // Needed by the edit form to seed the visible fields and to detect which key
@@ -423,7 +424,7 @@ export function Cron() {
                     <td className="flex gap-1 py-2">
                       {/* Trigger / edit / delete are mutations; the run history
                           is read-scope and stays available to any token. */}
-                      <button onClick={() => trigger(job.id)} disabled={!canWrite || !job.enabled || inflightOps.has(`${job.id}:trigger`)} aria-label={t("triggerNow")} className="p-1 hover:bg-gray-100 rounded disabled:opacity-50" title={!canWrite ? t("common:adminOnly") : !job.enabled ? t("pausedCannotTrigger") : t("triggerNow")}><Play size={14} /></button>
+                      <button onClick={() => trigger(job.id)} disabled={!canWrite || !job.enabled || job.status !== "active" || !!job.active_run_id || inflightOps.has(`${job.id}:trigger`)} aria-label={t("triggerNow")} className="p-1 hover:bg-gray-100 rounded disabled:opacity-50" title={!canWrite ? t("common:adminOnly") : job.active_run_id ? t("activeCannotTrigger") : !job.enabled || job.status !== "active" ? t("pausedCannotTrigger") : t("triggerNow")}><Play size={14} /></button>
                       <button onClick={() => startEdit(job)} disabled={!canWrite} aria-label={t("editAria", { name: job.name || job.id })} className="p-1 hover:bg-gray-100 rounded disabled:opacity-50" title={canWrite ? t("edit") : t("common:adminOnly")}><Pencil size={14} /></button>
                       <button onClick={() => setRunsFor(job)} aria-label={t("runsAria", { name: job.name || job.id })} className="p-1 hover:bg-gray-100 rounded" title={t("runs")}><History size={14} /></button>
                       <button onClick={() => remove(job)} disabled={!canWrite} aria-label={t("common:delete")} className="p-1 hover:bg-red-50 rounded text-red-500 disabled:opacity-50" title={canWrite ? t("common:delete") : t("common:adminOnly")}><Trash2 size={14} /></button>

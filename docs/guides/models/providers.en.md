@@ -7,8 +7,8 @@ Echo Agent supports multiple LLM providers through a unified YAML configuration 
 | Provider | Auth Method | Streaming | Credential Pool | Custom Endpoint | Notes |
 |----------|-------------|-----------|-----------------|-----------------|-------|
 | openai | API Key | ✅ | ✅ | ✅ | Also compatible with third-party OpenAI-protocol services |
-| anthropic | API Key | ✅ | ✅ | ❌ | Claude model family |
-| gemini | API Key | ✅ | ✅ | ❌ | Google Gemini series |
+| anthropic | API Key | ✅ | ✅ | ✅ | Claude model family |
+| gemini | API Key | ✅ | ✅ | ✅ | Google Gemini series |
 | bedrock | AWS Credentials | ✅ | ❌ | ❌ | Access via AWS regional endpoints |
 | openrouter | API Key | ✅ | ✅ | ✅ | Aggregation router supporting multiple providers |
 

@@ -114,6 +114,8 @@ risk = max(static_risk, declared_risk, key=severity)
 
 Tool calls pass through `ApprovalGate.check()` via a multi-step decision pipeline:
 
+`permissions.approval.auto_deny` takes priority over every approval convenience: read/write risk tiers, `auto_approve`, previous grants, CLI/trusted channels, and `mode: off`. Save configuration and restart the Runtime to apply policy changes.
+
 ```
 +-- Step 1: Static security guard (GuardDecision)
 |   +-- deny -> immediate rejection (irreversible destructive commands)
@@ -144,7 +146,8 @@ Tool calls pass through `ApprovalGate.check()` via a multi-step decision pipelin
 +-- Step 10: Smart Approval (LLM pre-screening)
 |   +-- approve -> pass
 |   +-- deny -> reject
-|   +-- escalate/unavailable -> continue
+|   +-- escalate -> continue to manual approval
+|   +-- unavailable -> deny and report approval model unavailable
 |
 +-- Step 11: Manual approval flow
     +-- nested call -> immediate deny (worker cannot answer prompts)
@@ -198,6 +201,7 @@ Tools can use this to decide whether to grant persistent privileges. For example
 | Interactive user session | `False` | `False` | Standard approval flow |
 | Cron trigger (authorized) | `True` | `True` | WRITE/EXEC auto-approved |
 | Cron trigger (unauthorized) | `True` | `False` | Per `unattended_policy` |
+| Proactive inspection (including delivery to IM) | `True` | `False` | Per `unattended_policy`; the delivery target grants no execution authority |
 | Sub-agent worker | inherited | inherited | Cannot self-escalate |
 
 !!! warning "DANGEROUS tools always denied when unattended"
@@ -237,8 +241,8 @@ tools:
 | Profile | Additional Blocks | Use Case |
 |---------|-------------------|----------|
 | `personal_cli` | No additional restrictions | Local development / personal use |
-| `daemon` | Blocks exec/execute_code/process/skill_install | Background daemon |
-| `public_gateway` | Blocks all write + exec + dangerous tools | Public-facing gateway |
+| `daemon` | Blocks exec/execute_code/process/skill_install/skill_run and mcp.call | Background daemon |
+| `public_gateway` | Denies execution and general file writes by name/capability; scoped artifact tools remain available | Public-facing gateway |
 
 ### Network Policy
 
@@ -257,7 +261,7 @@ permissions:
     auto_approve: [exec]          # Tools that skip approval entirely
     trusted_channels: [telegram]  # Trusted channels (EXEC may pass; DANGEROUS still needs approval)
     cli_auto_approve: true        # Auto-approve EXEC in interactive CLI mode
-    mode: "smart"                 # off | smart | strict
+    mode: "smart"                 # off | smart | manual
     unattended_policy: "deny"     # deny | allow_safe
     wait_timeout_seconds: 120     # Human approval timeout
     smart_model: ""               # Model used for Smart Approval
@@ -412,7 +416,7 @@ The following patterns require approval before proceeding:
 - Destructive SQL (`DROP TABLE`, `TRUNCATE`)
 
 !!! warning "SSRF Protection"
-    The `web_fetch` tool triggers an approval prompt when targeting internal/private addresses (`127.0.0.1`, `10.*`, `192.168.*`, etc.) to prevent SSRF attacks.
+    `web_fetch` rejects private, loopback and link-local targets by default. Human approval does not bypass URL/redirect address validation; private access requires an explicit operator policy.
 
 ---
 

@@ -42,17 +42,18 @@ export function Sessions() {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const seqRef = useRef(0);
 
-  const loadTurns = async (key: string) => {
+  const loadTurns = async (key: string, seq = seqRef.current) => {
     try {
       const result = await apiFetch<{ turns: TurnRun[] }>(
         `/sessions/${encodeURIComponent(key)}/turns?limit=30`,
       );
-      setTurns(result.turns);
-    } catch { setTurns([]); }
+      if (seq === seqRef.current) setTurns(result.turns);
+    } catch { if (seq === seqRef.current) setTurns([]); }
   };
 
   const loadHistory = async (key: string) => {
     setSelected(key); setHistoryError(null); setHistoryLoading(true);
+    setMessages([]); setTurns([]); setHasOlder(false);
     const seq = ++seqRef.current;
     try {
       const result = await apiFetch<{ messages: Message[]; has_more: boolean }>(
@@ -60,7 +61,7 @@ export function Sessions() {
       );
       if (seq !== seqRef.current) return;
       setMessages(result.messages); setHasOlder(result.has_more);
-      await loadTurns(key);
+      await loadTurns(key, seq);
     } catch (e: unknown) {
       if (seq !== seqRef.current) return;
       setMessages([]); setTurns([]);
@@ -70,15 +71,17 @@ export function Sessions() {
 
   const loadOlder = async () => {
     if (!selected || historyLoading || !hasOlder) return;
+    const seq = seqRef.current;
     setHistoryLoading(true);
     try {
       const result = await apiFetch<{ messages: Message[]; has_more: boolean }>(
         `/sessions/${encodeURIComponent(selected)}/history?limit=${HISTORY_SIZE}&offset=${messages.length}`,
       );
+      if (seq !== seqRef.current) return;
       setMessages((current) => [...result.messages, ...current]);
       setHasOlder(result.has_more);
-    } catch (e: unknown) { setHistoryError(e instanceof Error ? e.message : String(e)); }
-    finally { setHistoryLoading(false); }
+    } catch (e: unknown) { if (seq === seqRef.current) setHistoryError(e instanceof Error ? e.message : String(e)); }
+    finally { if (seq === seqRef.current) setHistoryLoading(false); }
   };
 
   const refreshAll = () => { refetch(); if (selected) loadHistory(selected); };

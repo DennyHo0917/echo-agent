@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 from echo_agent.dependencies.lazy_deps import INSTALL_TIMEOUT_SECONDS
 from echo_agent.scheduler.delivery import target_from_session_key
+from echo_agent.security.path_policy import check_write, resolve_path
 
 
 class TTSTool(Tool):
@@ -36,8 +38,11 @@ class TTSTool(Tool):
     # Keep the registry's wait_for ceiling above that plus synthesis overhead.
     timeout_seconds = INSTALL_TIMEOUT_SECONDS + 60
 
-    def __init__(self, workspace: str, openai_api_key: str = "", openai_api_base: str = "", tts_model: str = "tts-1", default_backend: str = "", default_voice: str = "", publish_fn=None):
-        self._workspace = Path(workspace)
+    def __init__(self, workspace: str, openai_api_key: str = "", openai_api_base: str = "", tts_model: str = "tts-1", default_backend: str = "", default_voice: str = "", publish_fn=None,
+                 *, restrict: bool = False, safe_write_root: str = ""):
+        self._workspace = Path(workspace).resolve()
+        self._restrict = restrict
+        self._safe_write_root = safe_write_root
         self._openai_key = openai_api_key
         self._openai_base = (openai_api_base or "https://api.openai.com/v1").rstrip("/")
         self._tts_model = tts_model
@@ -52,8 +57,14 @@ class TTSTool(Tool):
         output_path = params.get("output_path", "")
 
         if not output_path:
-            output_path = f"tts_output_{id(text) % 100000}.mp3"
-        full_path = (self._workspace / output_path).resolve()
+            output_path = f"tts_output_{uuid4().hex}.mp3"
+        violation = check_write(output_path, str(self._workspace), self._safe_write_root)
+        if violation:
+            return ToolResult(success=False, error=violation, error_kind="business")
+        full_path = resolve_path(output_path, str(self._workspace))
+        if self._restrict and not full_path.is_relative_to(self._workspace):
+            return ToolResult(success=False, error="Output path is outside workspace", error_kind="business")
+        full_path.parent.mkdir(parents=True, exist_ok=True)
 
         if backend == "openai":
             result = await self._openai_tts(text, voice or "alloy", full_path)

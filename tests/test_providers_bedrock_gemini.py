@@ -1,6 +1,6 @@
 """Contract tests for BedrockProvider and GeminiProvider.
 
-All third-party SDKs (boto3, anthropic, google-generativeai) are mocked — no
+All third-party SDKs (boto3, anthropic, google-genai) are mocked — no
 network access. Focus is on request construction (messages -> provider format),
 response parsing (provider response -> LLMResponse), error mapping and token
 accounting.
@@ -436,11 +436,11 @@ class TestGeminiBuildClient:
     def test_configure_called_with_api_key(self):
         fake_genai = MagicMock()
         fake_google = MagicMock()
-        fake_google.generativeai = fake_genai
-        with patch.dict("sys.modules", {"google": fake_google, "google.generativeai": fake_genai}):
+        fake_google.genai = fake_genai
+        with patch.dict("sys.modules", {"google": fake_google, "google.genai": fake_genai}):
             p = GeminiProvider(api_key="gem-key", default_model="gemini-pro")
-        assert p._client is fake_genai
-        fake_genai.configure.assert_called_once_with(api_key="gem-key")
+        assert p._client is fake_genai.Client.return_value.aio
+        fake_genai.Client.assert_called_once_with(api_key="gem-key", http_options=None, vertexai=False)
 
     def test_missing_sdk_raises(self, monkeypatch):
         import builtins
@@ -448,7 +448,7 @@ class TestGeminiBuildClient:
         real_import = builtins.__import__
 
         def fake_import(name, *args, **kwargs):
-            if name == "google.generativeai":
+            if name == "google" and "genai" in (args[2] if len(args) > 2 and args[2] else ()):
                 raise ImportError("no genai")
             return real_import(name, *args, **kwargs)
 
@@ -555,13 +555,13 @@ class TestGeminiConvertTools:
         decl = out[0]["function_declarations"][0]
         assert decl["name"] == "fn"
         assert decl["description"] == "d"
-        assert decl["parameters"] == {"type": "object"}
+        assert decl["parameters_json_schema"] == {"type": "object"}
 
     def test_omits_parameters_when_absent(self):
         p = _gemini_provider()
         out = p._convert_tools([{"name": "bare"}])
         decl = out[0]["function_declarations"][0]
-        assert "parameters" not in decl
+        assert "parameters_json_schema" not in decl
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -615,7 +615,7 @@ class TestGeminiParseResponse:
         assert out.finish_reason == "tool_calls"
         assert out.tool_calls[0].name == "exec"
         assert out.tool_calls[0].arguments == {"cmd": "ls"}
-        assert out.tool_calls[0].id == "call_exec"
+        assert out.tool_calls[0].id.startswith("call_")
 
     def test_usage_metadata(self):
         p = _gemini_provider()
@@ -653,7 +653,7 @@ class TestGeminiChat:
     async def test_chat_error_mapping(self):
         p = _gemini_provider()
         genai = MagicMock()
-        genai.GenerativeModel.side_effect = RuntimeError("gemini down")
+        genai.models.generate_content = AsyncMock(side_effect=RuntimeError("gemini down"))
         p._client = genai
         out = await p.chat(messages=[{"role": "user", "content": "hi"}])
         assert out.finish_reason == "error"
@@ -663,29 +663,25 @@ class TestGeminiChat:
     async def test_chat_happy_path(self):
         p = _gemini_provider()
         genai = MagicMock()
-        gemini_model = MagicMock()
-        gemini_model.generate_content.return_value = _gemini_resp(text_parts=["reply"])
-        genai.GenerativeModel.return_value = gemini_model
+        genai.models.generate_content = AsyncMock(return_value=_gemini_resp(text_parts=["reply"]))
         p._client = genai
         out = await p.chat(messages=[{"role": "user", "content": "hi"}])
         assert out.content == "reply"
-        model_kwargs = genai.GenerativeModel.call_args.kwargs
+        model_kwargs = genai.models.generate_content.call_args.kwargs["config"]
         assert "system_instruction" not in model_kwargs
 
     @pytest.mark.asyncio
     async def test_chat_system_instruction_and_tools(self):
         p = _gemini_provider()
         genai = MagicMock()
-        gemini_model = MagicMock()
-        gemini_model.generate_content.return_value = _gemini_resp(text_parts=["reply"])
-        genai.GenerativeModel.return_value = gemini_model
+        genai.models.generate_content = AsyncMock(return_value=_gemini_resp(text_parts=["reply"]))
         p._client = genai
         tools = [{"function": {"name": "fn", "parameters": {"type": "object"}}}]
         await p.chat(
             messages=[{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}],
             tools=tools,
         )
-        model_kwargs = genai.GenerativeModel.call_args.kwargs
+        model_kwargs = genai.models.generate_content.call_args.kwargs["config"]
         assert model_kwargs["system_instruction"] == "sys"
-        send_kwargs = gemini_model.generate_content.call_args.kwargs
+        send_kwargs = genai.models.generate_content.call_args.kwargs["config"]
         assert "tools" in send_kwargs

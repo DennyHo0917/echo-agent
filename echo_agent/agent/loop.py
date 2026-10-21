@@ -1409,7 +1409,7 @@ class AgentLoop:
                 logger.warning("Evolution engine failed to start: {}", e)
         logger.info("Agent loop started")
 
-    async def stop(self) -> None:
+    async def stop(self, *, close_shared_browser_sessions: bool = True) -> None:
         self._running = False
         self.bus.unsubscribe_inbound(self._on_inbound)
         self.bus.unsubscribe_inbound_rejected(self._on_inbound_rejected)
@@ -1450,7 +1450,8 @@ class AgentLoop:
         try:
             from echo_agent.agent.browser.session import manager as _browser_manager
 
-            await _browser_manager.close_all()
+            if close_shared_browser_sessions:
+                await _browser_manager.close_all()
         except Exception as e:
             logger.debug("browser manager close_all raised (ignored): {}", e)
         # spill 清扫循环不属于调度器,自己收。它绝大多数时间停在 sleep 上,
@@ -1715,7 +1716,9 @@ class AgentLoop:
         if not job_id:
             return
         try:
-            await scheduler.record_run_outcome(job_id, status, error)
+            run_id = str(event.metadata.get("run_id") or "")
+            await scheduler.record_run_outcome(job_id, status, error,
+                                               **({"run_id": run_id} if run_id else {}))
         except Exception as e:
             logger.debug("Cron outcome writeback failed for job {}: {}", job_id, e)
 
@@ -1747,7 +1750,9 @@ class AgentLoop:
             # drove the task terminal (the agent didn't call complete/fail).
             before = await manager.get(task_id)
             was_open = before is not None and before.status not in TERMINAL_TASK_STATUSES
-            after = await manager.mark_terminal(task_id, target, error=error, result=response_text)
+            attempt_id = str(event.metadata.get("task_attempt_id") or "")
+            after = await manager.mark_terminal(task_id, target, error=error, result=response_text,
+                                                **({"expected_attempt_id": attempt_id} if attempt_id else {}))
         except Exception as e:
             logger.debug("Task outcome writeback failed for task {}: {}", task_id, e)
             return
@@ -1950,7 +1955,8 @@ class AgentLoop:
                         error="delivery failed",
                     )
                 elif getattr(result, "task_incomplete", False):
-                    await self._record_cron_outcome(event, "completed")
+                    cron_status = "interrupted" if result.termination_reason == "interrupted" else "incomplete"
+                    await self._record_cron_outcome(event, cron_status, result.termination_reason)
                     if result.termination_reason == "awaiting_clarification":
                         await self._wait_task_for_clarification(event, response_text)
                     else:
@@ -2350,6 +2356,10 @@ class AgentLoop:
         req = self.clarify._im_pending.get(event.session_key)
         if req is None:
             return
+        if not await self._wait_task_for_clarification(event, req.question):
+            if self.clarify._im_pending.get(event.session_key) is req:
+                self.clarify.clear_im_pending(event.session_key)
+            return
         ttl = float(self.config.session.im_clarify_pending_ttl_seconds)
         session = await self.sessions.get_or_create(event.session_key)
         session.metadata["_im_clarification"] = {
@@ -2385,7 +2395,10 @@ class AgentLoop:
         if task_id and manager is not None:
             from echo_agent.tasks.models import TaskStatus
             task = await manager.get(task_id)
-            return task is not None and task.status == TaskStatus.BLOCKED and bool(task.metadata.get("_awaiting_clarification"))
+            attempt_id = str(state.get("continuation", {}).get("task_attempt_id") or "")
+            return (task is not None and task.status == TaskStatus.BLOCKED
+                    and bool(task.metadata.get("_awaiting_clarification"))
+                    and manager.matches_execution(task, attempt_id))
         return True
 
     async def restore_delivered_clarification(self, outbound: OutboundEvent, *, already_locked: bool = False) -> None:
@@ -2400,6 +2413,7 @@ class AgentLoop:
             async with lock:
                 return await self.restore_delivered_clarification(outbound, already_locked=True)
         event.metadata["_clarification"] = state
+        event.metadata["_clarification_recovered"] = True
         self.clarify.register_im_pending(event.session_key, state["question"], state.get("options", []),
                                          event.sender_id, delivered=False,
                                          continuation=state.get("continuation", {}))
@@ -2412,41 +2426,33 @@ class AgentLoop:
             await extension.record_delivery(outbound.delivery_origin, result)
 
     async def _wait_task_for_clarification(self, event: InboundEvent, question: str,
-                                          *, delivery_failed: bool = False) -> None:
+                                          *, delivery_failed: bool = False) -> bool:
         manager = getattr(self, "_task_manager", None)
         task_id = event.metadata.get("task_id")
         if manager is None or not task_id:
-            return
-        from echo_agent.tasks.models import TaskStatus
-        task = await manager.get(task_id)
-        if task is not None and (task.status == TaskStatus.RUNNING or
-                                 task.status == TaskStatus.BLOCKED and task.metadata.get("_awaiting_clarification")):
-            reason = f"提问暂未送达，等待投递恢复。\n{question}" if delivery_failed else question
-            metadata = {**task.metadata, "_awaiting_clarification": True}
-            if event.channel == "task" and isinstance(event.metadata.get("_clarification"), dict):
-                metadata["_clarification"] = event.metadata["_clarification"]
-                metadata.pop("_clarification_response", None)
-            await manager.update(task_id, blocked_reason=reason, error="",
-                                 metadata=metadata)
-            if task.status == TaskStatus.RUNNING:
-                await manager.transition(task_id, TaskStatus.BLOCKED)
+            return True
+        reason = f"提问暂未送达，等待投递恢复。\n{question}" if delivery_failed else question
+        clarification = event.metadata.get("_clarification") if event.channel == "task" else None
+        task = await manager.block_for_clarification(
+            task_id, reason,
+            attempt_id=str(event.metadata.get("task_attempt_id") or ""),
+            event_id=event.event_id if not event.metadata.get("_clarification_recovered") else "",
+            clarification=clarification if isinstance(clarification, dict) else None,
+        )
+        return task is not None
 
     async def _resume_clarification_task(self, event: InboundEvent) -> bool:
         manager = getattr(self, "_task_manager", None)
         task_id = event.metadata.get("task_id")
         if manager is None or not task_id:
             return True
-        from echo_agent.tasks.models import TaskStatus, TERMINAL_TASK_STATUSES
-        task = await manager.get(task_id)
-        if task is None or task.status in TERMINAL_TASK_STATUSES:
+        task = await manager.resume_after_clarification(
+            task_id, event.session_key, event.event_id,
+            attempt_id=str(event.metadata.get("task_attempt_id") or ""),
+        )
+        if task is None:
             return False
-        if task.status == TaskStatus.BLOCKED and task.metadata.get("_awaiting_clarification"):
-            metadata = dict(task.metadata)
-            metadata.pop("_awaiting_clarification", None)
-            await manager.update(task_id, blocked_reason="", metadata=metadata,
-                                 owner_id="", lease_until_ms=0, attempt_id="")
-            await manager.transition(task_id, TaskStatus.RUNNING)
-            await manager.set_running_context(task_id, event.session_key, event.event_id)
+        event.metadata["task_attempt_id"] = task.attempt_id
         return True
 
     _CLARIFY_CANCEL_CMD = "/__clarify_cancel__"
@@ -2589,6 +2595,13 @@ class AgentLoop:
 
     async def process_direct(self, content: str, session_key: str = "cli:direct", channel: str = "cli") -> str:
         """Process a message directly (for CLI or testing)."""
+        result = await self.process_direct_result(content, session_key=session_key, channel=channel)
+        return result.response_text or ""
+
+    async def process_direct_result(
+        self, content: str, session_key: str = "cli:direct", channel: str = "cli",
+    ) -> _ProcessResult:
+        """Direct execution retaining the business outcome for protocol adapters."""
         event = InboundEvent.text_message(
             channel=channel,
             sender_id="user",
@@ -2616,6 +2629,11 @@ class AgentLoop:
                     response_text=result.response_text,
                     error=result.termination_reason,
                 )
+            except asyncio.CancelledError:
+                from echo_agent.storage.sqlite import _settle_cleanup
+
+                await _settle_cleanup(self._mark_turn_terminal(event.event_id, "interrupted", error="cancelled"))
+                raise
             except Exception as e:
                 await self._mark_turn_terminal(
                     event.event_id,
@@ -2623,4 +2641,4 @@ class AgentLoop:
                     error=str(e),
                 )
                 raise
-        return result.response_text or ""
+        return result

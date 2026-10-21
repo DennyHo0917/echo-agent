@@ -185,6 +185,7 @@ class TestChannelManagerStopTimeout:
         slow_channel.name = "slow"
 
         manager = ChannelManager.__new__(ChannelManager)
+        manager.bus = MagicMock()
         manager._channels = {"slow": slow_channel}
         manager._cleanup_task = None
 
@@ -203,6 +204,7 @@ class TestChannelManagerStopTimeout:
         ch2.name = "ch2"
 
         manager = ChannelManager.__new__(ChannelManager)
+        manager.bus = MagicMock()
         manager._channels = {"ch1": ch1, "ch2": ch2}
         manager._cleanup_task = None
 

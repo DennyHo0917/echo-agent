@@ -55,7 +55,7 @@ class BaseChannel(ABC):
 | 企业微信 | `wecom` | Webhook 回调 | ❌ | ❌ | ❌ | ✅ |
 | 钉钉 | `dingtalk` | WebSocket | ❌ | ❌ | ✅ | ✅ |
 | 飞书 / Lark | `feishu` | Webhook 事件订阅 | ❌ | ❌ | ❌ | ✅ |
-| WhatsApp | `whatsapp` | Webhook 回调 | ❌ | ❌ | ❌ | ✅ |
+| WhatsApp | `whatsapp` | Webhook 回调 | ❌ | ❌ | ✅ | ✅ |
 | Email | `email` | IMAP 轮询 / SMTP 发送 | ❌ | ❌ | ❌ | ❌ |
 | Webhook | `webhook` | HTTP POST | ❌ | ❌ | ❌ | ❌ |
 | CLI | `cli` | stdin/stdout | ❌ | ❌ | ❌ | ✅ |
@@ -65,7 +65,7 @@ class BaseChannel(ABC):
 
 > ⚠️ QQ 机器人的文件能力在运行时按配置决定：`supports_files` 由 `config.media_enabled` 赋值，未开启媒体时为 `False`。
 
-发送文件前请通过 `supports_files` 判断，不要假设通道都能发文件 —— 目前只有 `weixin` 恒定为 `True`，`qqbot` 视配置而定。
+发送文件前请通过 `supports_files` 判断，不要假设通道都能发文件 —— `weixin`、`dingtalk`、`whatsapp` 为 `True`，`qqbot` 视配置而定。
 
 ## 各通道简介
 
@@ -79,7 +79,7 @@ class BaseChannel(ABC):
 
 ### 国内 IM
 
-- **微信 (`weixin`)** — 长轮询接入，是当前唯一恒定支持发送文件的通道。
+- **微信 (`weixin`)** — 长轮询接入，支持发送文件。
 - **QQ 机器人 (`qqbot`)** — 通过 Gateway (WebSocket) 接入；开启 `media_enabled` 后支持发送文件。
 - **企业微信 (`wecom`)** — 企业内部应用，通过回调接收消息，消息体加解密见 `wecom_crypto.py`。
 - **钉钉 (`dingtalk`)** — 通过 WebSocket 长连接接入，无需公网回调地址。

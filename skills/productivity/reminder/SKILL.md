@@ -23,11 +23,9 @@ cronjob(action="create", name="weekly-report",
         schedule="0 9 * * 1", command="提醒你写周报")
 ```
 
-The `reminder_store.py` script below is only a lightweight local note-taking
-list (list/done/delete). It has NO delivery path on its own. If the user wants
-to be reminded at a time, use `cronjob` — optionally also recording a note via
-the script. For a background one-off that must take effect, `spawn_task` can run
-the `cronjob` call for you.
+The `reminder_store.py` script is local bookkeeping with no delivery path. Use `cronjob` for recurring delivery and optionally record a local note. Do not delegate cron authorization to a background worker: create and approve the job in the interactive parent first.
+
+The public `cronjob` tool currently creates recurring CRON jobs only. Its API does not expose the scheduler's internal one-shot `at_ms` trigger. Do not promise a one-off reminder by turning a date into a repeating day-of-month expression; explain that boundary before creating anything.
 
 ### Jobs that produce a file (audio/image/document)
 
@@ -72,11 +70,11 @@ the `cronjob` tool's `schedule` argument:
 
 | Input | Cron Expression |
 |-------|----------------|
-| 明天9点 | `0 9 {tomorrow} * *` |
+| 明天9点 | Requires a one-shot date trigger; a day-of-month cron expression repeats monthly |
 | 每天早上8点 | `0 8 * * *` |
 | 每周一 | `0 9 * * 1` |
 | 每月1号 | `0 9 1 * *` |
-| 2小时后 | one-shot timer |
+| 2小时后 | Requires an explicitly supported one-shot date trigger |
 | 工作日下午5点 | `0 17 * * 1-5` |
 
 ## Local note storage (no delivery)

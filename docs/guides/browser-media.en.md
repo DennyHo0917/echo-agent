@@ -70,6 +70,7 @@ The Browser uses a per-owner isolation model: each session is bound to its creat
 
 - **Session limits**: Two-level ceiling (per-owner and global) prevents a single user from exhausting resources
 - **Idle reaping**: Sessions inactive for too long are automatically cleaned up
+- **Failed/cancelled creation**: A context allocated before page initialization completes is closed when setup fails or is cancelled, preventing resources that cannot be found in the session list
 - **SSRF protection**: Every request (including sub-resource loads and redirect hops) is validated against SSRF rules, blocking access to private/internal addresses
 - **Dialog handling**: Automatically handles `alert`/`confirm`/`prompt` dialogs, recording their content for the model to see
 - **Console capture**: Records page `error`/`warning` level console output
@@ -102,7 +103,7 @@ tools:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `url` | string | Target URL |
-| `max_chars` | integer | Content truncation limit (default 2MB) |
+| `max_chars` | integer | Returned-text character cap; download-byte limits apply separately |
 
 !!! note "Limitations"
     - Maximum 5 redirect hops
@@ -298,7 +299,7 @@ User: Draw a sunset beach image and send it to me
 
 Agent flow:
 1. image_generate → generate image (returns URL)
-2. web_fetch → download image locally
+2. Download the reviewed image URL through an authorized file-download path; web_fetch returns text, not a local image file
 3. send_file → send to user's chat
 ```
 

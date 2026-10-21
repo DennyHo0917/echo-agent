@@ -14,6 +14,7 @@ Gateway 默认监听 `http://127.0.0.1:58123`，API 前缀为 `/api/v1`（可由
 |---|---|---|
 | `POST` | `/message` | 投递消息 |
 | `GET` | `/health` | 健康状态 |
+| `GET` | `/ready` | 本地任务执行就绪状态；不探测远程模型 |
 | `GET` | `/stats` | 运行统计 |
 | `GET` | `/capabilities` | 调用方能力 |
 | `POST` | `/pair` | 生成配对码 |
@@ -80,6 +81,12 @@ curl -X POST http://127.0.0.1:58123/api/v1/message \
 
 错误响应通常为 `{"error": "..."}`，实际字段和状态码由具体端点决定。`GET {api_prefix}/health`（默认 `/api/v1/health`）根据健康状态返回 200 或 503。
 
+`GET {api_prefix}/ready` 无需令牌，只有 Gateway、消息总线、Agent、SQLite 连接、非 Stub 模型配置及必需 Runtime 依赖均已就绪时返回 200；否则为 503，`checks` 给出各项结果。`provider_remote_verified: false` 表示未进行远程调用探活；200 不保证模型凭据、配额或上游网络可用。没有模型时可继续打开配置界面，`/health` 的存活状态不代表能完成真实任务。
+
+`GET /config` 返回脱敏后的保存配置，`_meta.running` 是运行值，`_meta.pending_paths` 与 `_meta.restart_required` 描述两者差异。`PATCH /config` 仅原子保存经过校验的非敏感叶字段，不原地更改 Runtime；嵌套对象按叶合并并递归校验。通道的显式 start/stop/restart 会加载该通道的保存配置。配置加载仍遵循环境变量优先级。
+
+`POST /cron/{id}/trigger` 对不存在任务返回 404；暂停、禁用、终态、已有执行、并发容量已满或执行锁冲突返回可诊断的 409，避免把尚在执行误报成任务不存在。
+
 ## 幂等重试 {#idempotent-retries}
 
 投递消息的接口支持幂等键，用于在网络抖动、超时重连后安全重试，而不会让同一条消息被处理两次。
@@ -117,7 +124,7 @@ curl -X POST http://127.0.0.1:58123/api/v1/message \
 
 !!! warning "409 只表示键冲突"
     409 专用于「同一个键被用于不同内容」这一种情况，客户端**不应重试**——应换新键或修回原内容。
-    任务未完成（`incomplete` / `interrupted`）返回的是 200，语义由响应体的 `status` 字段承载，这类请求是可以重试的。
+    任务未完成（`incomplete` / `interrupted`）可返回 200，须读取响应体的 `status`。相同幂等键只重放已保存终态，不创建新回合。若要继续执行，应先检查既有结果和外部副作用，再明确提交新请求；此机制不承诺任意外部副作用 exactly-once。
 
 ### 作用域与有效期
 

@@ -9,11 +9,11 @@ metadata:
 
 # Daily Briefing
 
-Generates a morning briefing combining weather, today's tasks, news headlines, and calendar events.
+The Agent can combine weather, tasks, news and calendar using the relevant skills. The helper script provides a smaller date/weather/reminder summary.
 
-## Configuration
+## Agent composition recipe
 
-Create `~/.echo-agent/briefing.yaml`:
+The following is a planning recipe for the Agent, not a file automatically read by the script. The bundled script accepts only `--city`, prints date/weather/local reminders, and does not fetch calendar/news, send messages, or register a schedule:
 
 ```yaml
 schedule: "0 8 * * *"  # 每天早上8点
@@ -57,11 +57,8 @@ channel: telegram  # delivery channel
 # Generate briefing now
 python3 scripts/generate_briefing.py
 
-# Generate with custom config
-python3 scripts/generate_briefing.py --config ~/.echo-agent/briefing.yaml
-
-# Preview without sending
-python3 scripts/generate_briefing.py --dry-run
+# Select the weather city; output goes to stdout
+python3 scripts/generate_briefing.py --city Beijing
 ```
 
 ## Scheduling

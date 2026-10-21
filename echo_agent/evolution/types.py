@@ -19,11 +19,11 @@ def _new_id(prefix: str) -> str:
 
 
 def digest(value: Any, *, max_chars: int = 200) -> str:
-    """Produce a redacted, length-bounded representation of an arbitrary value.
+    """Produce a length-bounded preview and correlation hash of a value.
 
-    Used to keep tool args/results out of the persistent store while preserving
-    enough signal for later analysis. The first 200 chars of the str repr are
-    kept verbatim and a SHA-256 prefix is appended so equality checks survive.
+    A preview is plaintext, not redaction. Callers requiring redaction must set
+    ``max_chars=0``. The default retains the first 200 characters for explicitly
+    permitted briefing previews; the hash preserves equality comparisons.
     """
     if isinstance(value, (dict, list)):
         try:

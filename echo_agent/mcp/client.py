@@ -64,15 +64,19 @@ class MCPClient:
         self._notification_handler = handler
 
     async def connect(self, timeout: float = 60) -> None:
-        if hasattr(self._transport, "connect"):
-            await self._transport.connect(timeout=timeout)
-        self._reader_alive = True
-        self._reader_task = asyncio.create_task(self._read_loop())
-        # The handshake is the part that actually hangs on a wedged server, so it
-        # gets the caller's connect budget. It used to fall back to _request's
-        # own 30s default, which meant connect_timeout governed only the
-        # milliseconds of process spawn.
-        await self.initialize(timeout=timeout)
+        try:
+            if hasattr(self._transport, "connect"):
+                await self._transport.connect(timeout=timeout)
+            self._reader_alive = True
+            self._reader_task = asyncio.create_task(self._read_loop())
+            await self.initialize(timeout=timeout)
+        except BaseException:
+            # A failed or cancelled handshake still owns a child/socket and
+            # reader. Direct users need the same cleanup as MCPManager users.
+            from echo_agent.storage.sqlite import _settle_cleanup
+
+            await _settle_cleanup(self.disconnect())
+            raise
 
     async def disconnect(self) -> None:
         self._closed = True
@@ -248,6 +252,9 @@ class MCPClient:
                 # on (and may still bill for) a call we have abandoned.
                 await self._cancel_request(req_id, "timeout")
                 raise TimeoutError(f"MCP request '{method}' timed out after {timeout}s")
+            except asyncio.CancelledError:
+                await self._cancel_request(req_id, "caller cancelled")
+                raise
             except Exception as e:
                 logger.warning("MCP request '{}' failed: {}", method, e)
                 raise
@@ -261,8 +268,9 @@ class MCPClient:
 
     async def _cancel_request(self, req_id: int, reason: str) -> None:
         try:
-            await self._notify(
-                "notifications/cancelled", {"requestId": req_id, "reason": reason},
+            await asyncio.wait_for(
+                self._notify("notifications/cancelled", {"requestId": req_id, "reason": reason}),
+                timeout=2,
             )
         except Exception as e:
             # Best effort: the connection may already be gone, which is often

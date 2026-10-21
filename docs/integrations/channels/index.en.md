@@ -55,7 +55,7 @@ There are 14 channels, matching `_CHANNEL_REGISTRY` in `echo_agent/channels/mana
 | WeCom (WeChat Work) | `wecom` | Webhook callback | ❌ | ❌ | ❌ | ✅ |
 | DingTalk | `dingtalk` | WebSocket | ❌ | ❌ | ✅ | ✅ |
 | Feishu / Lark | `feishu` | Webhook event subscription | ❌ | ❌ | ❌ | ✅ |
-| WhatsApp | `whatsapp` | Webhook callback | ❌ | ❌ | ❌ | ✅ |
+| WhatsApp | `whatsapp` | Webhook callback | ❌ | ❌ | ✅ | ✅ |
 | Email | `email` | IMAP polling / SMTP send | ❌ | ❌ | ❌ | ❌ |
 | Webhook | `webhook` | HTTP POST | ❌ | ❌ | ❌ | ❌ |
 | CLI | `cli` | stdin/stdout | ❌ | ❌ | ❌ | ✅ |
@@ -65,7 +65,7 @@ The "Real-time" column reflects the `is_realtime` class attribute. `email`, `web
 
 > ⚠️ The QQ Bot's file capability is decided at runtime: `supports_files` is assigned from `config.media_enabled`, so it is `False` when media is off.
 
-Always check `supports_files` before sending a file rather than assuming every channel can — today only `weixin` is unconditionally `True`, and `qqbot` depends on its configuration.
+Always check `supports_files` before sending a file rather than assuming every channel can — `weixin`, `dingtalk` and `whatsapp` declare `True`, while `qqbot` depends on its configuration.
 
 ## Channel Descriptions
 
@@ -79,7 +79,7 @@ Always check `supports_files` before sending a file rather than assuming every c
 
 ### China IM
 
-- **WeChat (`weixin`)** — Long-polling based, and currently the only channel that unconditionally supports sending files.
+- **WeChat (`weixin`)** — Long-polling based, and supports sending files.
 - **QQ Bot (`qqbot`)** — Connects via the Gateway (WebSocket); supports sending files once `media_enabled` is on.
 - **WeCom (`wecom`)** — Enterprise internal app receiving messages via callbacks; payload encryption lives in `wecom_crypto.py`.
 - **DingTalk (`dingtalk`)** — Connects over a WebSocket long connection, so no public callback URL is needed.

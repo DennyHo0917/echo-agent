@@ -120,9 +120,21 @@ class A2AServer:
                 session_id = hashlib.sha256(
                     f"{task.owner}\0{task.id}".encode("utf-8")
                 ).hexdigest()[:32]
-            response_text = await self._loop.process_direct(
-                user_text, session_key=f"a2a:{session_id}", channel="a2a",
-            )
+            structured = getattr(type(self._loop), "process_direct_result", None)
+            if callable(structured):
+                outcome = await self._loop.process_direct_result(
+                    user_text, session_key=f"a2a:{session_id}", channel="a2a",
+                )
+                response_text = outcome.response_text
+                reason = outcome.termination_reason
+                task.metadata["termination_reason"] = reason
+                task.state = (TaskState.INPUT_REQUIRED if reason == "awaiting_clarification"
+                              else TaskState.FAILED if outcome.task_incomplete else TaskState.COMPLETED)
+            else:
+                response_text = await self._loop.process_direct(
+                    user_text, session_key=f"a2a:{session_id}", channel="a2a",
+                )
+                task.state = TaskState.COMPLETED
             if dropped:
                 # Text was processed; flag the ignored parts so the caller knows
                 # they were not consumed rather than assuming full handling.
@@ -130,7 +142,6 @@ class A2AServer:
                     f"{response_text or ''}\n\n"
                     f"[note] This agent processes text only; ignored parts: {sorted(set(dropped))}"
                 )
-            task.state = TaskState.COMPLETED
             task.messages.append(A2AMessage.text("agent", response_text or ""))
         except Exception as e:
             logger.error("A2A task processing failed: {}", e)

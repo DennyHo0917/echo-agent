@@ -1,143 +1,57 @@
 # Skills System Guide
 
-Echo Agent ships with 35 built-in skills across 10 categories. Skills are pre-written instruction sets (SKILL.md files) that teach the agent how to perform specific tasks.
+Echo Agent bundles 35 SKILL.md files in 10 categories. Skills instruct the model and may contain scripts. Their presence does not configure an external account, API or local executable.
 
-## What Is a Skill
+## Discovery, selection and execution
 
-A skill is a structured set of operational instructions containing:
+1. Enabled skills enter a character-budgeted list of name, category and description. Omission is explicit, and `skills_list` provides discovery beyond the prompt budget.
+2. The model selects a skill. There is no separate relevance-ranking, mutual-exclusion or trigger engine.
+3. `skill_view` reads SKILL.md/supporting files and reports missing declared dependencies/environment variables without installing them.
+4. `skill_run` runs a script in its skill directory. Declared, permitted dependencies may be installed through the existing approval gate; execution switches, tool policy, timeouts and process cleanup still apply.
 
-- **Name & description** — Tells the agent what this skill does
-- **Version** — For compatibility management
-- **Metadata** — Tags, category, required environment variables
-- **Instruction body** — Markdown-formatted steps with code examples
+`tools.exec.enabled: false` disables skill scripts too. `daemon` and `public_gateway` deny `skill_run` by default; an operator must explicitly allow it when needed. Skills run host code rather than in an OS sandbox. Disabling a skill affects listing, reading and execution consistently.
 
-```
-skills/
-├── creative/
-│   ├── image-gen/SKILL.md
-│   ├── meme-gen/SKILL.md
-│   └── ...
-├── development/
-│   ├── code-runner/SKILL.md
-│   └── ...
-└── productivity/
-    ├── calendar/SKILL.md
-    └── ...
-```
+## Frontmatter that is actually consumed
 
-## How to Use Skills
-
-Simply describe what you want in natural language. No need to remember skill names:
-
-```
-User: Generate a picture of a cat
-Agent: [automatically selects image-gen skill, invokes image generation tool]
-
-User: What's the weather tomorrow?
-Agent: [automatically selects weather skill, fetches weather data]
-
-User: Summarize the content of this webpage
-Agent: [automatically selects summarize skill, extracts and summarizes content]
-```
-
-!!! tip "Skill selection is automatic"
-    The agent matches the most appropriate skill based on your intent. Just describe what you want to do — no need to specify which skill to use.
-
-## How Skill Selection Works
-
-The agent follows this process to select skills:
-
-1. **Intent recognition** — Analyzes user input to extract core intent
-2. **Skill matching** — Computes relevance based on skill descriptions and tags
-3. **Environment check** — Verifies that required environment variables are configured
-4. **Skill execution** — Follows instructions in SKILL.md step by step
-
-!!! warning "When environment variables are missing"
-    If a skill's required environment variable is not configured, the agent will prompt you to set it. For example, `image-gen` requires `OPENAI_API_KEY` — if unset, the agent will tell you to configure it first.
-
-## Environment Variable Requirements
-
-Some skills require API keys for external services:
-
-| Skill | Required Env Var | Purpose |
-|-------|-----------------|---------|
-| image-gen | `OPENAI_API_KEY` | Call DALL-E for image generation |
-| web-search | `SERPAPI_KEY` or `TAVILY_API_KEY` | Perform web searches |
-| tts-voice | `ELEVENLABS_API_KEY` | Text-to-speech conversion |
-| stocks | `ALPHA_VANTAGE_KEY` | Fetch stock market data |
-| notion-sync | `NOTION_TOKEN` | Sync with Notion |
-| calendar | `GOOGLE_CREDENTIALS_JSON` | Access Google Calendar |
-
-Configure environment variables in `config.yaml`:
-
-```yaml
-env:
-  OPENAI_API_KEY: "sk-..."
-  SERPAPI_KEY: "..."
-```
-
-Or set them as system environment variables.
-
-## SKILL.md Format
-
-Each skill is defined by a `SKILL.md` file:
-
-```markdown
+````markdown
 ---
-name: image-gen
-version: "1.0.0"
-description: "Generate images from text descriptions"
-category: creative
-tags: [image, generation, dall-e, art]
-requires_env:
-  - OPENAI_API_KEY
+name: my-report
+version: 1.0.0
+description: "Generate a report using an explicitly configured API account."
+metadata:
+  echo:
+    tags: [Report]
+    requires:
+      pip: [httpx]
+      env: [MY_REPORT_API_KEY]
 ---
 
-# Image Generation Skill
+# My Report
 
-## Trigger Conditions
+Describe real script arguments, output files and failure handling here.
+````
 
-Activate when the user requests generating, creating, or drawing an image.
+Category comes from the directory. Tags use `metadata.echo.tags`; dependencies use `metadata.echo.requires.pip`/`requires.bins`, and credential names use `metadata.echo.requires.env`. The plugin manifest's top-level `requires_env` is not equivalent. Installation may also use `metadata.echo.install`, aligned with the real dependencies.
 
-## Execution Steps
+Scripts inherit safe process infrastructure and explicitly declared credential keys, not the full Runtime environment. Set variables on the service process or in a protected systemd EnvironmentFile. There is no generic top-level `env` configuration section. Keep credentials out of command-line arguments.
 
-1. Parse the user's description, extract visual elements
-2. Build an optimized English prompt
-3. Call DALL-E API to generate the image
-4. Return the image with a brief description
+## Built-in requirements
 
-## Code Example
+| Skill | Credentials and boundary |
+|---|---|
+| image-gen | `OPENAI_API_KEY` for OpenAI; `STABILITY_API_KEY` for Stability; other paths follow the script |
+| web-search | DuckDuckGo or configured SearXNG; no promised SERPAPI/Tavily adapter |
+| tts-voice | No key for Edge TTS; `OPENAI_API_KEY` for OpenAI |
+| stocks | Public endpoints, no mandatory ALPHA_VANTAGE_KEY; availability depends on the remote service |
+| notion-sync | `NOTION_API_TOKEN` |
+| calendar | CalDAV URL/account arguments; the local ICS example is a separate recipe, not Google OAuth integration |
 
-` ` `python
-result = await ctx.tool_registry.invoke("openai_image", {
-    "prompt": optimized_prompt,
-    "size": "1024x1024",
-    "quality": "standard"
-})
-` ` `
+YAML in briefing, monitoring or market-alert instructions may be an Agent/operator recipe. It takes effect automatically only if the script explicitly reads it. Use core `cronjob` creation/authorization for scheduling and the existing delivery pipeline for confirmed output.
 
-## Notes
+## Installation and management
 
-- Always translate user descriptions to English prompts for best results
-- Default to 1024x1024 if user doesn't specify a size
-```
+Dashboard Skills exposes content, files, dependency state, toggles and declared dependency installation. External import and mutation use admin authorization and admission. See [evolution and evaluation](../../concepts/evolution-evaluation.en.md) for candidates, review, promotion and rollback. Plugins register tools; skills compose existing tools, with different trust and lifecycle rules.
 
-!!! warning "Skill frontmatter has no requires_env field"
-    `requires_env` belongs to the **plugin** manifest; skills do not have it. Skill frontmatter recognises exactly five keys — `name`, `description`, `category`, `version` and `tags` — and any other key is ignored.
-
-    Skills therefore perform no environment check before loading: a skill missing its credentials still appears in the available list, and the failure surfaces when the script actually runs. State such dependencies in the `description`, and validate them inside the script with a clear error message.
-
-## Skills vs Plugins
-
-| Feature | Skill | Plugin |
-|---------|-------|--------|
-| Format | Markdown instruction file | Python code module |
-| Purpose | Guide agent behavior | Extend system capabilities |
-| Development cost | Low — just write Markdown | Medium — requires programming |
-| Capability scope | Compose existing tools | Register new tools and hooks |
-| Discovery | Auto-scan from skills directory | Multi-source discovery mechanism |
-
-## Next Steps
-
-- See the [complete skill catalog](catalog.en.md) for all available skills
-- For extending capabilities further, see the [plugin system](../plugins/using-plugins.en.md)
+- [Skill catalog](catalog.en.md)
+- [Skill authoring](../../development/skill-authoring.en.md)
+- [Tools and permissions](../../guides/tools-permissions.en.md)

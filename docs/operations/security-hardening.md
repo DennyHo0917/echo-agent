@@ -34,16 +34,17 @@ gateway:
 ```
 
 !!! danger "禁止在生产环境使用 open 模式"
-    `open` 模式不验证任何请求身份，任何能访问 Gateway 端口的客户端均可执行操作。
+    `open` 跳过平台/用户白名单与配对；独立的 API/admin token 检查仍生效。无令牌部署只适合受控本机，公网必须配置令牌、来源和工具策略。
 
 ### allowlist 模式（推荐）
 
-预定义 Token 白名单，客户端请求必须携带有效 Token：
+预定义平台/用户白名单；API/admin token 是独立配置，消息入口还须匹配 allowed_users 或受支持的本机身份：
 
 ```yaml
 gateway:
   auth:
     mode: allowlist
+    allowed_users: ["cli:local"]
     api_tokens:
       - "ea-user-a1b2c3d4e5f6"
       - "ea-user-x7y8z9w0v1u2"
@@ -52,7 +53,7 @@ gateway:
     token_header: "X-Echo-Agent-Token"
 ```
 
-- `api_tokens`：普通用户 Token，可执行对话和任务操作
+- `api_tokens`：读取/聊天 Token；任务管理等写操作要求 admin
 - `admin_tokens`：管理员 Token，可访问配置修改、服务管理等管理接口
 - `token_header`：自定义请求头名称，默认 `X-Echo-Agent-Token`
 
@@ -113,7 +114,7 @@ gateway:
 Gateway 会拒绝 `Origin` 或 `Host` 头不在白名单中的请求。
 
 !!! warning "空 Origin 请求"
-    某些非浏览器客户端（如 curl）不发送 Origin 头。Gateway 对无 Origin 的请求采用 Host 头验证。
+    某些非浏览器客户端（如 curl）不发送 Origin 头。无 Origin 且无浏览器来源标记的原生客户端不触发浏览器 CSRF 判定；令牌与消息身份检查仍独立生效。
 
 ---
 
@@ -128,8 +129,8 @@ Echo Agent 提供分级安全配置，通过 profile 快速应用预定义策略
 | 取值 | 含义 | 追加限制 |
 |------|------|----------|
 | `personal_cli` | 本机单人使用（默认） | 无 |
-| `daemon` | 长期后台运行 | 拒绝 4 个工具 + 4 类能力 |
-| `public_gateway` | 网关对外暴露 | 拒绝 11 个工具 + 8 类能力 |
+| `daemon` | 长期后台运行 | 拒绝 5 个工具 + 5 类能力 |
+| `public_gateway` | 网关对外暴露 | 拒绝 12 个工具 + 9 类能力 |
 
 ```yaml
 security:
@@ -145,9 +146,9 @@ security:
 
 | 档位 | 工具数 | 可用范围 |
 |------|--------|----------|
-| `minimal` | 14 | 只读问答 |
-| `messaging` | 18 | + 记忆与媒体生成 |
-| `coding` | 24 | + 文件写入与编排 |
+| `minimal` | 19 | 只读问答 |
+| `messaging` | 23 | + 记忆与媒体生成 |
+| `coding` | 29 | + 文件写入与编排 |
 | `full` | 全部 | 白名单为 `*`，放通所有工具（默认） |
 
 ```yaml
@@ -156,7 +157,7 @@ tools:
 ```
 
 !!! danger "默认档位是 full"
-    `full` 放通全部工具，包括 `exec`、`execute_code`、`process`、`skill_install`、`skill_manage`、`cronjob` 这 6 个 `HIGH_RISK_TOOLS`。生产环境应显式降到 `coding` 或更低，并配合 `security.profile` 收紧。
+    `full` 放通全部工具，包括 `exec`、`execute_code`、`process`、`skill_install`、`skill_manage`、`cronjob`、`skill_run` 等执行/持久权限工具。生产环境应显式降到 `coding` 或更低，并配合 `security.profile` 收紧。
 
 两个字段是独立生效的：`tools.profile` 决定白名单，`security.profile` 在白名单之上追加拒绝。完整判定顺序见[安全档位矩阵](../reference/security-profile-matrix.md)。
 
@@ -164,14 +165,7 @@ tools:
 
 ## 工具风险等级
 
-Echo Agent 的内置工具按风险分为四组：
-
-| 工具组 | 示例工具 | 风险说明 |
-|--------|---------|---------|
-| `MINIMAL_TOOLS` | 搜索、问答、摘要 | 只读操作，无副作用 |
-| `MESSAGING_TOOLS` | 发消息、邮件通知 | 可对外发送内容 |
-| `CODING_TOOLS` | 文件读写、代码执行 | 可修改本地文件 |
-| `HIGH_RISK_TOOLS` | shell 执行、网络请求 | 可执行任意命令 |
+工具风险为 `READ_ONLY`、`WRITE`、`EXEC`、`DANGEROUS`。`MINIMAL_TOOLS` 等是工具档位集合，并非风险等级；消息、产物等操作也不能笼统称为只读。执行前仍需通过路径规则、守卫与审批，详见[工具与权限](../guides/tools-permissions.md)。
 
 可在配置中精细控制单个工具的启用/禁用：
 
@@ -245,15 +239,7 @@ gateway:
 
 禁用工具用 `tools.deny`，配置中没有 `tools.disabled` 字段。
 
-!!! warning "令牌不要写在配置文件里"
-    配置文件**不支持** `${ENV_VAR}` 形式的环境变量替换 —— 写成 `"${ECHO_AGENT_API_TOKEN}"` 会被当作字面字符串存为令牌值，而不是读取环境变量。
+!!! warning "保护令牌与加密密钥"
+    YAML 不展开 `${VAR}`。列表/字典配置可用 JSON 环境变量覆盖，例如 `ECHO_AGENT_GATEWAY__AUTH__API_TOKENS='["replace-with-random-token"]'`；也可写入权限为 `0600` 的配置文件，禁止提交版本库。
 
-    `api_tokens` 与 `admin_tokens` 是列表类型，也**无法**用环境变量注入 —— 环境变量的值一律是字符串，`ECHO_AGENT_GATEWAY__AUTH__API_TOKENS='["x"]'` 会因类型不符被校验拒绝。
-
-    可行的做法是把令牌写在配置文件里，并用文件权限保护：
-
-    ```bash
-    chmod 600 ~/.echo-agent/echo-agent.yaml
-    ```
-
-    确保该文件不进版本库。环境变量的覆盖规则与适用范围见[环境变量参考](../reference/environment-variables.md)。
+    CredentialManager 默认要求加密；密钥优先取环境变量，否则读/创建 `.credential_key`，备份必须保留对应密钥。YAML 中的密钥不会因此自动加密。详见[环境变量](../reference/environment-variables.md)与[安全模型](../concepts/security-model.md)。

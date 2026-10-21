@@ -13,6 +13,8 @@ Calendar management via CalDAV protocol or local ICS files.
 
 ## Configuration
 
+The configuration below is a recipe. `calendar_client.py` does not read calendar.yaml: pass its supported `--url`, `--user`, and `--password` arguments or use the separate local ICS recipe. Avoid exposing account secrets in saved transcripts or process arguments; prefer adapting a protected account configuration before unattended use.
+
 `~/.echo-agent/calendar.yaml`:
 
 ```yaml

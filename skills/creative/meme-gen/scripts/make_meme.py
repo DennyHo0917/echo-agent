@@ -11,10 +11,6 @@ from echo_agent.dependencies.skill_require import require  # noqa: E402
 # pulled in pymupdf, python-docx and pytesseract — a much larger install than
 # needed, and on a machine without tesseract it failed outright, so meme-gen
 # was unusable for a dependency it never imports.
-require("skill.meme-gen")
-
-from PIL import Image, ImageDraw, ImageFont  # noqa: E402
-
 TEMPLATES = {
     "drake": "https://i.imgflip.com/30b1gx.jpg",
     "distracted": "https://i.imgflip.com/1ur9b0.jpg",
@@ -32,6 +28,9 @@ FONT_PATHS = [
 
 
 def find_font(size=40):
+    require("skill.meme-gen")
+    from PIL import ImageFont
+
     for path in FONT_PATHS:
         if Path(path).exists():
             return ImageFont.truetype(path, size)
@@ -74,6 +73,9 @@ def draw_text(draw, text, position, font, max_width):
 
 
 def make_meme(image_source, top_text="", bottom_text="", output=None):
+    require("skill.meme-gen")
+    from PIL import Image, ImageDraw
+
     if image_source.startswith("http"):
         tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
         urllib.request.urlretrieve(image_source, tmp.name)

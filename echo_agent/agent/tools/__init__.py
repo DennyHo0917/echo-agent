@@ -168,7 +168,7 @@ def discover_tools(
     # AgentLoop._setup_delegation alongside delegate_task.
     if provider:
         from echo_agent.agent.tools.vision import VisionTool
-        tools.append(VisionTool(provider=provider, workspace=ws))
+        tools.append(VisionTool(provider=provider, workspace=ws, restrict=restrict, spill_root=spill_root))
 
     _try_register_image_gen(tools, config, provider)
     _try_register_tts(tools, config, ws, provider, publish_fn=bus.publish_outbound)
@@ -331,4 +331,6 @@ def _try_register_tts(tools: list[Tool], config: Config, ws: str, provider: LLMP
         default_backend=default_backend,
         default_voice=default_voice,
         publish_fn=publish_fn,
+        restrict=config.tools.restrict_to_workspace,
+        safe_write_root=config.tools.safe_write_root,
     ))

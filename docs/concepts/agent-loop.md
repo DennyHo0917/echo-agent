@@ -57,7 +57,7 @@ ApprovalGate 对每个工具调用做出三种决策之一：
 | `ask` | 暂停循环，向用户请求确认 |
 | `deny` | 拒绝执行，返回拒绝原因给模型 |
 
-决策依据包括工具的安全分类（safe / sensitive / destructive）、当前用户权限、以及会话级别的授权策略。
+决策依据包括工具的安全分类（READ_ONLY / WRITE / EXEC / DANGEROUS）、当前用户权限、以及会话级别的授权策略。
 
 ### ToolCircuitBreaker（工具熔断器）
 
@@ -92,7 +92,7 @@ ToolRegistry 管理所有可用工具的注册、发现与过滤：
 
 长时间操作时保持通道连接活跃：
 
-- **ProgressHeartbeat**：定期向通道发送心跳信号，防止超时断连
+- **ProgressHeartbeat**：定期发布进度/等待状态；WebSocket 保活由传输层独立负责
 - **SharedActivityState**：在多个并发工具执行间共享进度状态，用于构建用户可见的进度指示
 
 ### TokenStreamPublisher（流式发布器）
@@ -100,7 +100,7 @@ ToolRegistry 管理所有可用工具的注册、发现与过滤：
 将 LLM 的流式 token 输出实时推送到通道，实现打字机效果的响应体验。支持：
 
 - 按通道类型适配推送策略（如 Slack 需要批量更新消息）
-- 流中断与恢复
+- 流中断后的终态与完整最终正文投递（不是恢复任意上游 token 流）
 - 与 ProgressHeartbeat 协同工作
 
 ### CostTracker（成本追踪器）
@@ -131,8 +131,8 @@ ToolRegistry 管理所有可用工具的注册、发现与过滤：
 
 当一次推理产生多个工具调用时，系统按安全分类进行分区：
 
-- **safe** 类工具：可并发执行
-- **sensitive / destructive** 类工具：串行执行，逐一通过 ApprovalGate
+- 仅显式 `execution_mode="read_only"` 且资源分区允许的独立调用可按并发配置执行
+- 其他调用串行执行；每次实际执行仍通过 ApprovalGate
 
 ### 终止条件
 
@@ -140,7 +140,7 @@ Agent Loop 在以下任一条件满足时终止迭代：
 
 1. **无更多工具调用**：模型返回纯文本响应，不再请求工具
 2. **达到 max_iterations**：迭代次数耗尽
-3. **外部中断**：用户发送新消息或取消操作
+3. **外部中断**：显式 interrupt/cancel 控制；普通新消息排队
 4. **预算耗尽**：CostTracker 检测到 token/费用超限
 
 ---

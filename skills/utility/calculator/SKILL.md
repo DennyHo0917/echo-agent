@@ -13,11 +13,11 @@ Math, units, dates, and currency conversion.
 
 ## Math Expressions
 
-Safe evaluation via Python:
+Use the bundled calculator, which validates supported AST nodes before evaluating:
 
 ```python
-import ast
-result = eval(compile(ast.parse("2**10 + 3.14 * 2", mode='eval'), '', 'eval'))
+from subprocess import run
+run(["python3", "scripts/calc.py", "eval", "2**10 + 3.14 * 2"], check=True)
 ```
 
 Complex math:

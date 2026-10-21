@@ -11,7 +11,7 @@ Echo Agent 提供完整的任务生命周期管理：从轻量的 Todo 清单到
 | **Todo** | `todo` | 轻量任务清单，per-session 存储，适合规划阶段的思路梳理 |
 | **Task** | `task` | 持久化任务记录，具备完整状态机、优先级、看板追踪 |
 | **Workflow** | `workflow` | DAG 多步编排，自动解析依赖并按序调度 step 任务 |
-| **Delegate** | `delegate` | 多 Agent 分派，主 Agent 分拆子任务交给 worker 并行执行 |
+| **Delegate** | `delegate_task` | 多 Agent 分派，主 Agent 分拆子任务交给 worker 并行执行 |
 
 ---
 
@@ -57,7 +57,7 @@ VALID_TASK_TRANSITIONS = {
     QUEUED:    {RUNNING, CANCELLED},
     RUNNING:   {REVIEW, BLOCKED, FAILED, SUSPENDED, CANCELLED},
     BLOCKED:   {QUEUED, RUNNING, CANCELLED},
-    REVIEW:    {SUCCESS, QUEUED},
+    REVIEW:    {SUCCESS, QUEUED, CANCELLED},
     SUSPENDED: {QUEUED, RUNNING, CANCELLED},
     FAILED:    {QUEUED},         # retry
     SUCCESS:   {},               # 终态
@@ -155,7 +155,7 @@ PENDING ──→ RUNNING ──→ SUCCESS
   │            │  │
   │            │  └→ WAITING (暂停等待)
   │            │  └→ BLOCKED
-  │            └──→ FAILED ──→ PENDING (retry whole workflow)
+  │            └──→ FAILED (terminal; inspect results before creating new work)
   └──→ CANCELLED ← (可从任何非终态到达)
 ```
 
@@ -167,9 +167,9 @@ PENDING ──→ RUNNING ──→ SUCCESS
   "action": "create",
   "name": "数据处理流水线",
   "steps": [
-    {"id": "fetch", "name": "抓取数据", "tool_name": "http_get", "tool_params": {"url": "..."}},
-    {"id": "parse", "name": "解析数据", "tool_name": "extract", "tool_params": {}, "depends_on": ["fetch"]},
-    {"id": "store", "name": "存储结果", "tool_name": "db_write", "tool_params": {}, "depends_on": ["parse"]}
+    {"id": "fetch", "name": "抓取数据", "tool_name": "web_fetch", "tool_params": {"url": "https://example.com"}},
+    {"id": "parse", "name": "解析数据", "tool_name": "knowledge_index", "tool_params": {"action": "status"}, "depends_on": ["fetch"]},
+    {"id": "store", "name": "存储结果", "tool_name": "write_file", "tool_params": {"path": "report.txt", "content": "Replace with the verified result"}, "depends_on": ["parse"]}
   ]
 }
 ```
@@ -183,22 +183,26 @@ PENDING ──→ RUNNING ──→ SUCCESS
 | `tool_name` | string | 要执行的工具名 |
 | `tool_params` | dict | 工具参数 |
 | `depends_on` | list[str] | 依赖的步骤 ID 列表 |
-| `condition` | string | 条件表达式（预留）|
-| `retry_max` | int | 步骤级重试上限 |
-| `timeout_seconds` | int | 超时秒数，默认 300 |
+| `condition` | string | 预留字段，只接受空字符串；非空条件明确报错，不会静默忽略 |
+| `retry_max` | int | 非负整数，步骤失败后自动重试的次数，默认 0；重试可能重复外部副作用，应仅对可安全重试的步骤启用 |
+| `timeout_seconds` | int | 正整数，从 Runtime 分发该步骤开始计时，默认 300 秒；包含排队与审批等待 |
+
+创建和启动前会拒绝空图、重复步骤 ID、缺失依赖与循环依赖。并发 `advance` 不会重复创建步骤任务；任务创建后、工作流映射保存前中断留下的 PENDING 步骤，会在下一次启动/推进时接续。
 
 ### 执行模型
 
 Workflow 引擎**只做编排**——它解析依赖、创建步骤任务、推进状态，但**不执行工具**。实际执行由 Agent 完成：
 
 1. `workflow start` → 引擎将无依赖的步骤创建为 `QUEUED` 任务
-2. Agent 通过 `task list` 发现就绪的步骤任务（`metadata` 中含 `tool_name`/`tool_params`）
-3. Agent 执行：`task start` → 运行工具 → `task complete`
+2. Runtime 的 TaskDispatcher 自动领取就绪步骤，在独立的 `task:<id>` 会话中交给 Agent（`metadata` 中含 `tool_name`/`tool_params`）
+3. Agent 按步骤指令调用工具并通过 `task complete` / `task fail` 结束任务；Runtime 也会依据回合实际结果补写终态
 4. `task complete` 自动触发 `workflow.advance()`，引擎检查依赖并调度后续步骤
-5. 所有步骤成功 → workflow 状态变为 `SUCCESS`；任一步骤失败 → workflow 变为 `FAILED`
+5. 所有步骤成功才会成为 `SUCCESS`；失败步骤在 `retry_max` 耗尽后使 workflow 成为 `FAILED`；取消步骤使 workflow 成为 `CANCELLED`，不会记为成功
+
+暂停会阻止尚未领取的步骤及后继步骤开始，已经领取的步骤允许完成；恢复时先核对其真实结果。步骤超时会记录失败并向该回合发出协作中断；运行中的工具可能到下一检查点才停止，已经发生的文件或外部副作用不会回滚。旧 attempt 的迟到结果不能覆盖重试后的新 attempt。
 
 !!! note "advance 是 best-effort，不是事务的一部分"
-    `task complete` 与 `task fail` 都会在状态落库**之后**触发一次 advance；`task cancel` 不触发。
+    `task complete`、`task fail` 与 `task cancel` 都会在状态落库**之后**触发一次 advance。
 
     任务状态的持久化与 workflow 的推进是两步，前者先完成。advance 失败时只记录一条告警，不会让工具调用失败、也不会回滚任务状态——代价是 DAG 的进度暂时停在原处，直到下一次显式执行 `workflow advance` 补上。系统没有后台补偿任务来兜这件事。
 
@@ -251,35 +255,34 @@ Workflow 引擎**只做编排**——它解析依赖、创建步骤任务、推�
 
 ## 多 Agent 分派（Delegate）
 
-`delegate` 工具让主 Agent（编排者）将子任务分派给 Worker Agent 并行执行。
+`delegate_task` 工具让主 Agent（编排者）将子任务分派给 Worker Agent 并行执行。
 
 ### 调用方式
 
 ```json
 {
-  "tool": "delegate",
-  "task": "将 README 翻译为日语",
-  "context": "项目根目录下的 README.md，保持格式不变"
+  "tool": "delegate_task",
+  "goal": "将项目根目录 README.md 翻译为日语，保持格式不变"
 }
 ```
 
 ### 执行模型
 
-1. 主 Agent 调用 `delegate`，描述子任务和上下文
-2. 系统创建 Worker Agent，分配受限工具集（不含 `delegate`/`spawn_task`/`clarify` 等）
+1. 主 Agent 调用 `delegate_task`，描述子任务和上下文
+2. 系统创建 Worker Agent，分配受限工具集（不含 `delegate_task`/`spawn_task`/`clarify` 等）
 3. Worker 独立执行，受 `max_iterations` 和 `timeout_seconds` 约束
 4. Worker 返回结构化结果给主 Agent
 5. 主 Agent 综合各 Worker 结果继续推进
 
 ### 安全约束
 
-- Worker 不可调用 `delegate`（防止递归分派风暴）
+- Worker 不可调用 `delegate_task`（防止递归分派风暴）
 - Worker 不可直接向用户发消息（`message`/`notify` 被屏蔽）
 - Worker 的工具调用受主 Agent 同等的审批策略约束
 - 每个 Worker 有独立的 `trace_id` 用于审计追踪
 
 !!! info "风险等级"
-    `delegate` 工具的 `risk_level` 为 `exec`，表示它会执行实际操作。在需要审批的通道中，分派本身需要先通过审批门控。
+    `delegate_task` 工具的 `risk_level` 为 `exec`，表示它会执行实际操作。在需要审批的通道中，分派本身需要先通过审批门控。
 
 ---
 
@@ -310,9 +313,9 @@ Dashboard 提供可视化 Kanban 看板，按任务状态分列展示：
 ### 通过 API 访问
 
 ```
-GET  /api/tasks?board_id=default
-GET  /api/tasks?status=running
-POST /api/tasks/{id}/transition  {"status": "queued"}
+GET  /api/v1/tasks?board_id=default
+GET  /api/v1/tasks?status=running
+POST /api/v1/tasks/{id}/transition  {"status": "queued"}
 ```
 
 ---
@@ -342,6 +345,12 @@ POST /api/tasks/{id}/transition  {"status": "queued"}
 
 ## 使用场景示例
 
+### 长会话与澄清
+
+长会话压缩只有获得完整、可用的摘要后才替换历史。摘要模型失败、输出截断、内容过滤或处于失败冷却期时，原始历史与媒体引用会保留，不会把缺少中段记录的结果保存为压缩成功。若保留的历史仍超过模型窗口，本次请求可能返回上下文限制错误；恢复模型后可重试，或显式开启新会话。
+
+通过 CLI attach 收到澄清提示后可以立即回答；提示仍在投递时收到的答案也会保留到工具读取。断开或取消会话仍按既有中断流程结束等待。
+
 ### 场景 1：简单任务跟踪
 
 ```
@@ -358,9 +367,9 @@ Agent:
 ```
 Agent:
   → workflow create "部署流水线" steps=[
-      {id: "test", tool_name: "shell", tool_params: {cmd: "pytest"}},
-      {id: "build", tool_name: "shell", tool_params: {cmd: "docker build"}, depends_on: ["test"]},
-      {id: "deploy", tool_name: "shell", tool_params: {cmd: "kubectl apply"}, depends_on: ["build"]}
+      {id: "test", tool_name: "exec", tool_params: {command: "pytest"}},
+      {id: "build", tool_name: "exec", tool_params: {command: "docker build"}, depends_on: ["test"]},
+      {id: "deploy", tool_name: "exec", tool_params: {command: "kubectl apply"}, depends_on: ["build"]}
     ]
   → workflow start
   → (引擎自动调度 test → build → deploy)
@@ -370,8 +379,8 @@ Agent:
 
 ```
 Agent:
-  → delegate task="将 CHANGELOG 翻译为日语"
-  → delegate task="将 CHANGELOG 翻译为韩语"
+  → delegate_task goal="将 CHANGELOG 翻译为日语"
+  → delegate_task goal="将 CHANGELOG 翻译为韩语"
   → (两个 Worker 并行执行，主 Agent 汇总结果)
 ```
 

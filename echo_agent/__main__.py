@@ -58,7 +58,7 @@ def _run_eval(args) -> int:
         print("    expected_contains: ['hello', 'hi']")
         return 1
 
-    from echo_agent.evaluation import EvalRunner, EvalDataset
+    from echo_agent.evaluation import EvalDataset
 
     dataset = EvalDataset.from_path(path)
     if args.tag:
@@ -70,37 +70,67 @@ def _run_eval(args) -> int:
         return 1
 
     async def run() -> int:
-        from echo_agent.app import bootstrap
+        import tempfile
+        from contextlib import AsyncExitStack
 
-        overrides = {"workspace": workspace} if workspace else None
-        ctx = await bootstrap(config_path=config_path, overrides=overrides)
-        await ctx.bus.start()
-        await ctx.agent.start()
+        from echo_agent.agent.loop import _resolve_builtin_skills_dir
+        from echo_agent.cli.workspace import resolve_effective_workspace
+        from echo_agent.evaluation.runtime import IsolatedEvalRunner, copy_skill_tree
+        from echo_agent.models.providers import create_provider
+        from echo_agent.models.router import ModelRouter
+        from echo_agent.skills.store import SkillStore
 
-        try:
-            # Pass the provider so expected_output cases get semantic judging,
-            # not just the non-semantic string-similarity metric.
-            runner = EvalRunner(
-                ctx.agent,
-                parallel=args.parallel,
-                timeout=config.evaluation.timeout_per_case,
-                provider=ctx.provider,
+        if not config.models.providers:
+            print("Evaluation requires a configured model provider.", file=_sys.stderr)
+            return 1
+        online_workspace = resolve_effective_workspace(config, str(config_file) if config_file else None, workspace)
+        # Snapshot skills without bootstrapping the online Runtime. An eval CLI
+        # must not acquire online DBs, connect plugins/MCP, or start evolution.
+        with tempfile.TemporaryDirectory(prefix="echo-eval-cli-") as directory:
+            root = _Path(directory)
+            user = root / "skills"
+            source = online_workspace / "data" / "skills"
+            if source.exists() and config.skills.enabled:
+                copy_skill_tree(source, user)
+            store = SkillStore(
+                user_dir=user,
+                builtin_dir=(_resolve_builtin_skills_dir(online_workspace, config.skills.skills_dir)
+                             if config.skills.enabled else None),
+                external_dirs=([_Path(p) for p in config.skills.external_dirs] if config.skills.enabled else []),
+                disabled=config.skills.disabled,
             )
-            report = await runner.run_dataset(dataset)
+            async with AsyncExitStack() as clients:
+                router = ModelRouter(config.models)
+                for selected in config.models.providers:
+                    try:
+                        instance = create_provider(selected, default_model=config.models.default_model)
+                    except Exception as error:
+                        # One unavailable optional backend must not prevent the
+                        # configured routing/fallback chain from being tested.
+                        print(f"Evaluation provider '{selected.name}' unavailable ({type(error).__name__}).", file=_sys.stderr)
+                        continue
+                    clients.push_async_callback(instance.aclose)
+                    router.register_provider(selected.name, instance)
+                providers = router.registered_providers()
+                if not providers:
+                    print("Evaluation requires an available model provider.", file=_sys.stderr)
+                    return 1
+                provider = next(iter(providers.values()))
+                runner = IsolatedEvalRunner(
+                    config=config, provider=provider, skill_store=store,
+                    parallel=args.parallel, timeout=config.evaluation.timeout_per_case,
+                    providers=providers,
+                )
+                report = await runner.run_dataset(dataset)
 
-            from echo_agent.evaluation.reporter import EvalReporter
-            reporter = EvalReporter()
-            print(reporter.to_table(report))
+                from echo_agent.evaluation.reporter import EvalReporter
+                reporter = EvalReporter()
+                print(reporter.to_table(report))
 
-            if args.output:
-                _Path(args.output).write_text(reporter.to_json(report), encoding="utf-8")
-                print(f"\nResults saved to {args.output}")
-            return 0 if report.passed_cases == report.total_cases else 1
-        finally:
-            from echo_agent.app import AppRuntime
-            await AppRuntime._stop_step("bus", ctx.bus.stop())
-            await AppRuntime._stop_step("agent", ctx.agent.stop())
-            await AppRuntime._stop_step("storage", ctx.storage.close())
+                if args.output:
+                    _Path(args.output).write_text(reporter.to_json(report), encoding="utf-8")
+                    print(f"\nResults saved to {args.output}")
+                return 0 if report.passed_cases == report.total_cases else 1
 
     return asyncio.run(run())
 

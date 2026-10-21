@@ -125,6 +125,10 @@ class ModelRouter:
         if name not in self._health:
             self._health[name] = ProviderHealth()
 
+    def registered_providers(self) -> dict[str, LLMProvider]:
+        """Snapshot client registrations without sharing mutable routing health."""
+        return dict(self._providers)
+
     def route(self, task_type: str = "", content: str = "", preferred_model: str = "") -> RouteDecision:
         if preferred_model:
             for route in self._config.routes:

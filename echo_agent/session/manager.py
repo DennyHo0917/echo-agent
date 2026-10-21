@@ -16,7 +16,7 @@ from urllib.parse import quote
 
 from loguru import logger
 
-from echo_agent.storage.errors import CorruptData
+from echo_agent.storage.errors import CorruptData, StorageUnavailable
 
 
 @dataclass
@@ -204,7 +204,7 @@ class SessionManager:
                     continue
                 os.replace(str(path), str(target))
                 logger.info("Migrated session filename {} -> {}", path.name, target.name)
-            except (OSError, ValueError) as e:
+            except (OSError, ValueError, TypeError, AttributeError) as e:
                 logger.warning("Failed to migrate session file {}: {}", path.name, e)
                 continue
 
@@ -304,17 +304,16 @@ class SessionManager:
         # StorageUnavailable / CorruptData propagate — we must NOT quietly serve a
         # possibly-stale downgrade file when the backend is merely unreachable.
         session = await self._load_from_storage(key)
-        if session is not None:
-            return session
-        # Genuine NotFound in SQLite: a prior save may have fallen back to a
-        # downgrade file. Recover it and best-effort re-persist to SQLite.
+        # A failed save can leave a newer atomic fallback even when SQLite has
+        # an older row. Recover that snapshot before another save overwrites it.
         recovered = await self._load_from_file(key)
-        if recovered is not None:
+        if recovered is not None and (session is None or recovered.updated_at.timestamp() >= session.updated_at.timestamp()):
             try:
                 await self._save_to_storage(recovered)
             except Exception as e:
                 logger.warning("Failed to re-persist recovered session {} to storage: {}", key, e)
-        return recovered
+            return recovered
+        return session
 
     async def _load_from_storage(self, key: str) -> Session | None:
         # StorageUnavailable / CorruptData propagate to get_or_create, which must
@@ -378,9 +377,13 @@ class SessionManager:
                 )
 
             return await asyncio.to_thread(_sync_load)
-        except Exception as e:
-            logger.warning("Failed to load session {}: {}", key, e)
+        except FileNotFoundError:
+            # A genuine disappearance between exists() and open() is NotFound.
             return None
+        except (ValueError, TypeError, KeyError, AttributeError) as e:
+            raise CorruptData(f"session '{key}' file is not parseable: {e}") from e
+        except OSError as e:
+            raise StorageUnavailable(f"session '{key}' file cannot be read: {e}") from e
 
     async def save(self, session: Session) -> None:
         async with self._lock:
@@ -405,6 +408,13 @@ class SessionManager:
         except Exception as e:
             logger.warning("Failed to save session {} to storage, falling back to file: {}", session.key, e)
             await self._save_to_file(session)
+        else:
+            # SQLite now owns the newest snapshot. Keeping an older downgrade
+            # file around can resurrect cleared history after a future outage.
+            try:
+                await asyncio.to_thread(self._session_path(session.key).unlink, missing_ok=True)
+            except OSError as e:
+                logger.warning("Failed to remove stale session fallback {}: {}", session.key, e)
 
     async def _save_to_file(self, session: Session) -> None:
         import asyncio

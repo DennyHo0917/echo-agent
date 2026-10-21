@@ -98,6 +98,8 @@ async def test_delete_cron_job_not_found(mock_server, api):
 
 @pytest.mark.asyncio
 async def test_trigger_cron_job(mock_server, api):
+    from echo_agent.scheduler.service import ScheduledJob
+    mock_server._agent_loop.scheduler.get_job.return_value = ScheduledJob(id="j1")
     mock_server._agent_loop.scheduler.trigger_job = AsyncMock(return_value=True)
 
     app = web.Application()
@@ -111,6 +113,7 @@ async def test_trigger_cron_job(mock_server, api):
 
 @pytest.mark.asyncio
 async def test_trigger_cron_job_not_found(mock_server, api):
+    mock_server._agent_loop.scheduler.get_job.return_value = None
     mock_server._agent_loop.scheduler.trigger_job = AsyncMock(return_value=False)
 
     app = web.Application()
@@ -118,6 +121,51 @@ async def test_trigger_cron_job_not_found(mock_server, api):
     async with TestClient(TestServer(app)) as client:
         resp = await client.post("/api/v1/cron/nonexistent/trigger")
         assert resp.status == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fields", [
+    {"active_run_id": "active-run"}, {"enabled": False}, {"status": "paused"},
+    {"status": "completed"}, {"status": "cancelled"},
+])
+async def test_trigger_existing_unavailable_job_returns_conflict(mock_server, api, fields):
+    from echo_agent.scheduler.service import ScheduledJob
+    mock_server._agent_loop.scheduler.get_job.return_value = ScheduledJob(id="j1", **fields)
+    mock_server._agent_loop.scheduler.trigger_job = AsyncMock(return_value=False)
+    app = web.Application()
+    app.router.add_post("/cron/{id}/trigger", api.trigger_job)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post("/cron/j1/trigger")
+        assert response.status == 409
+        assert "error" in await response.json()
+        mock_server._agent_loop.scheduler.trigger_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_trigger_racing_run_returns_conflict(mock_server, api):
+    from echo_agent.scheduler.service import ScheduledJob
+    mock_server._agent_loop.scheduler.get_job.return_value = ScheduledJob(id="j1")
+    mock_server._agent_loop.scheduler.trigger_job = AsyncMock(return_value=False)
+    app = web.Application()
+    app.router.add_post("/cron/{id}/trigger", api.trigger_job)
+    async with TestClient(TestServer(app)) as client:
+        assert (await client.post("/cron/j1/trigger")).status == 409
+
+
+@pytest.mark.asyncio
+async def test_trigger_capacity_exhausted_returns_actionable_conflict(mock_server, api):
+    from echo_agent.scheduler.service import ScheduledJob
+    scheduler = mock_server._agent_loop.scheduler
+    scheduler.get_job.return_value = ScheduledJob(id="j1")
+    scheduler.trigger_job = AsyncMock(return_value=False)
+    scheduler._max_concurrent = 1
+    scheduler.list_jobs.return_value = [ScheduledJob(id="other", active_run_id="busy")]
+    app = web.Application()
+    app.router.add_post("/cron/{id}/trigger", api.trigger_job)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post("/cron/j1/trigger")
+        assert response.status == 409
+        assert (await response.json())["code"] == "capacity_exhausted"
 
 
 @pytest.mark.asyncio

@@ -6,13 +6,7 @@ Echo Agent's bottlenecks are usually model-call latency and local data I/O. This
 
 ## Where the time goes
 
-Typical request breakdown:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ Model call (60-80%)  │ Tool execution (10-25%) │ I/O (5-15%) │
-└─────────────────────────────────────────────────────────────┘
-```
+Measure model calls, tools and storage waits through traces. There is no measured percentage breakdown that applies to all deployments.
 
 | Bottleneck | Symptom | Where to tune |
 |------------|---------|---------------|
@@ -34,11 +28,11 @@ Route scenarios to appropriate models to balance cost against speed. Routing rul
 models:
   default_model: claude-sonnet-4-5
   routes:
-    - task_types: [simple]
+    - task_types: [chat]
       provider: openai
       model: gpt-4o-mini
       max_tokens: 1000
-    - task_types: [coding]
+    - task_types: [code]
       provider: anthropic
       model: claude-sonnet-4-5
       max_tokens: 8000
@@ -208,17 +202,17 @@ tools:
     timeout_seconds: 30
 ```
 
-All outbound requests pass the shared SSRF check in `echo_agent/security/net_guard.py`; private addresses are rejected by default. Open the relevant `allow_private_addresses` only when intranet access is genuinely required.
+Web fetching and media downloads share redirect validation and DNS pinning through `net_guard`; browser requests validate their targets separately. This is not a universal network sandbox for model SDKs, channels or shell subprocesses. Manage their endpoints and deployment network permissions separately.
 
 ---
 
 ## Resource guidance
 
-### Minimum
+### Starting capacity for a light deployment (not a measured support minimum)
 
-| Resource | Minimum | Notes |
+| Resource | Planning example | Notes |
 |----------|---------|-------|
-| CPU | 2 cores | Needed for parallel tool execution |
+| CPU | 2 cores | Measure with actual concurrency |
 | Memory | 2 GB | Base runtime plus SQLite cache |
 | Disk | 1 GB | Database, logs, spill |
 | Network | Stable connection | Model API calls |

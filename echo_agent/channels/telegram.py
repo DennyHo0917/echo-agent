@@ -283,8 +283,13 @@ class TelegramChannel(BaseChannel):
                     continue
                 backoff_idx = 0
                 for update in updates:
+                    if await self._process_update(update) is False:
+                        # Keep this occurrence unacknowledged at Telegram when
+                        # the Runtime did not accept it; later updates cannot
+                        # jump over it in the durable offset.
+                        await asyncio.sleep(1)
+                        break
                     self._offset = update["update_id"] + 1
-                    await self._process_update(update)
                 # Persist once per batch (not per update) to bound disk I/O;
                 # the offset advances even if a single update fails to process,
                 # matching Telegram's long-poll semantics (fetching offset N acks
@@ -299,19 +304,21 @@ class TelegramChannel(BaseChannel):
                 await asyncio.sleep(delay)
                 backoff_idx += 1
 
-    async def _process_update(self, update: dict[str, Any]) -> None:
+    async def _process_update(self, update: dict[str, Any]) -> bool:
         msg = update.get("message")
         if not msg:
-            return
+            return True
         chat = msg.get("chat", {})
         chat_id = str(chat.get("id", ""))
         sender = msg.get("from", {})
         sender_id = str(sender.get("id", ""))
+        if not self.is_allowed(sender_id):
+            return True
         text = msg.get("text", "") or msg.get("caption", "") or ""
 
         if chat.get("type") in ("group", "supergroup") and self._group_policy == "mention":
             if not self._is_mentioned(msg, text) and not await self.is_clarification_reply(sender_id, chat_id):
-                return
+                return True
 
         media: list[dict[str, str]] = []
         for kind in ("photo", "document", "audio", "video", "voice"):
@@ -328,7 +335,7 @@ class TelegramChannel(BaseChannel):
                     logger.warning("Telegram file download failed, skipping: {}", file_id[:30])
 
         if not text and not media:
-            return
+            return True
 
         await self._api("sendChatAction", json={"chat_id": chat_id, "action": "typing"})
 
@@ -347,7 +354,7 @@ class TelegramChannel(BaseChannel):
             )
             reply_to_is_own = bool(self._bot_id) and str(replied_from.get("id", "")) == self._bot_id
 
-        await self._handle_message(
+        event = await self._handle_message(
             sender_id=sender_id,
             chat_id=chat_id,
             text=text,
@@ -358,7 +365,9 @@ class TelegramChannel(BaseChannel):
             reply_to_is_own=reply_to_is_own,
             metadata={"chat_type": chat.get("type", "private")},
             is_group=chat.get("type") in ("group", "supergroup"),
+            event_id=self._native_event_id(chat_id, msg.get("message_id")),
         )
+        return event is not None
 
     def _is_mentioned(self, msg: dict[str, Any], text: str) -> bool:
         if self._bot_username and f"@{self._bot_username}" in text:

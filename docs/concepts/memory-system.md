@@ -39,7 +39,7 @@ class Episode:
     importance: float         # 0-1 重要性评分
 ```
 
-检索方式：通过 embedding 向量进行 semantic search，支持按 entity 和时间范围过滤。
+检索方式：embedding 语义检索不可用时回落关键词检索。`search_episodes` 接受 query、session_key 和 limit；实体与时间字段不等于公开的筛选参数。
 
 ### SEMANTIC 层
 
@@ -51,7 +51,7 @@ class Episode:
 1. **被取代条目**：`superseded_by` 字段已设置，指向更新版本
 2. **低活跃条目**：effective_importance 低于 archive threshold
 
-归档条目仍可被检索召回（权重降低），支持版本回溯。
+归档条目仅供管理/维护查看，被取代条目仅供管理员查看；普通工具、检索和快照不会以低权重继续召回。版本关系可供追溯。
 
 ```mermaid
 graph TD
@@ -340,7 +340,7 @@ class Contradiction:
 
 ## Consolidation（整合管线）
 
-Consolidation 是记忆系统的"睡眠期"处理流程，类似人类睡眠时的记忆整合。在会话结束或系统空闲时触发：
+Consolidation 是记忆系统的"睡眠期"处理流程，类似人类睡眠时的记忆整合。在非评测回复后达到未整合消息阈值时排入后台：
 
 ### Sleep-Time Pipeline 步骤
 
@@ -368,9 +368,9 @@ Consolidation 是记忆系统的"睡眠期"处理流程，类似人类睡眠时�
 
 ### 触发条件
 
-- 会话正常结束时自动触发
-- 系统空闲超过配置时间阈值时触发
-- 可手动触发（管理接口）
+- ResponseStage 在回复后调用 `should_consolidate(message_count, last_consolidated)`
+- 达到配置阈值后调度；`sleep_consolidation` 控制同一后台任务中的额外整合步骤
+- 当前没有独立空闲定时器或通用手动整合管理 API
 
 整合是异步执行的，不阻塞对话回复：会话结束时把任务交给后台任务调度器，而非在请求路径上同步跑完。
 

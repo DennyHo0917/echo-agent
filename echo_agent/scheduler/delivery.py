@@ -76,6 +76,7 @@ def inbound_event_from_job(job: Any) -> InboundEvent:
         is_group=is_group,
         metadata={
             "job_id": job.id,
+            "run_id": str(getattr(job, "run_id", "") or ""),
             "job_name": job.name,
             "source_session_key": source_session_key or session_key_override or "",
             "deliver_channel": target_channel,

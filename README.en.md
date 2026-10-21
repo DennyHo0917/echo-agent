@@ -210,7 +210,7 @@ cd echo-agent
 uv venv venv --python 3.11
 source venv/bin/activate
 uv pip install -e ".[all,dev]"
-ruff check .
+ruff check . --extend-exclude client
 pytest
 ```
 

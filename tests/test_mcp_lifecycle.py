@@ -305,6 +305,8 @@ class TestReconnection:
 
         client.list_tools = AsyncMock(return_value=[{"name": "second", "description": "d"}])
         await manager._on_notification("srv", "notifications/tools/list_changed", {})
+        # The reader must remain available to receive the tools/list response.
+        await manager._refresh_tasks["srv"]
 
         assert _server_tools(registry) == ["mcp_srv_second"]
 

@@ -10,9 +10,12 @@
 
 from __future__ import annotations
 
-import re
+import asyncio
+import time
 from pathlib import Path
 from typing import Any
+
+import regex as re
 
 from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 from echo_agent.spill.layout import is_artifact
@@ -24,6 +27,7 @@ _MAX_LIMIT = 20000
 # 产物内检索每条命中的上下文字符数,以及命中条数上限。
 _MATCH_CONTEXT = 120
 _MAX_MATCHES = 50
+_SEARCH_TIMEOUT_SECONDS = 5.0
 
 
 class ReadSpillTool(Tool):
@@ -89,11 +93,11 @@ class ReadSpillTool(Tool):
         return resolved, ""
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
+        deadline = time.monotonic() + _SEARCH_TIMEOUT_SECONDS
         target, error = self._authorize(params["path"], ctx)
         if target is None:
             return ToolResult(success=False, error=error, error_kind="business")
 
-        import asyncio
         try:
             text = await asyncio.to_thread(
                 target.read_text, encoding="utf-8", errors="replace",
@@ -103,7 +107,7 @@ class ReadSpillTool(Tool):
 
         pattern = params.get("pattern")
         if pattern:
-            return self._search(text, pattern)
+            return await asyncio.to_thread(self._search, text, pattern, deadline)
         return self._slice(text, params)
 
     def _slice(self, text: str, params: dict[str, Any]) -> ToolResult:
@@ -124,19 +128,33 @@ class ReadSpillTool(Tool):
             meta["next_offset"] = end
         return ToolResult(output=chunk, metadata=meta)
 
-    def _search(self, text: str, pattern: str) -> ToolResult:
+    def _search(self, text: str, pattern: str, deadline: float | None = None) -> ToolResult:
+        if deadline is None:
+            deadline = time.monotonic() + _SEARCH_TIMEOUT_SECONDS
         try:
             regex = re.compile(pattern)
         except re.error as e:
             return ToolResult(success=False, error=f"Invalid regex: {e}", error_kind="validation")
 
         excerpts: list[str] = []
-        for m in regex.finditer(text):
-            start = max(0, m.start() - _MATCH_CONTEXT)
-            end = min(len(text), m.end() + _MATCH_CONTEXT)
-            excerpts.append(f"@{m.start()}: {text[start:end]}")
-            if len(excerpts) >= _MAX_MATCHES:
-                break
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            # finditer's timeout covers the whole iterator, not each match.
+            for m in regex.finditer(text, timeout=remaining):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError
+                start = max(0, m.start() - _MATCH_CONTEXT)
+                end = min(len(text), m.end() + _MATCH_CONTEXT)
+                excerpts.append(f"@{m.start()}: {text[start:end]}")
+                if len(excerpts) >= _MAX_MATCHES:
+                    break
+        except TimeoutError:
+            return ToolResult(
+                success=False, error="Regex search exceeded the request time budget.",
+                error_kind="timeout",
+            )
         if not excerpts:
             return ToolResult(output="No matches in artifact.", metadata={"count": 0, "total_chars": len(text)})
         meta: dict[str, Any] = {"count": len(excerpts), "total_chars": len(text)}

@@ -32,6 +32,11 @@ classifiers = [
 dependencies = [
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
+    # Default credential encryption and encrypted channel callbacks need this
+    # even when no optional provider/channel extra is installed.
+    "cryptography>=41.0",
+    # User/model supplied patterns need a matching deadline (stdlib re has none).
+    "regex>=2024.11.6",
     "pyyaml>=6.0",
     "loguru>=0.7.2,<0.8",
     "aiohttp>=3.9",
@@ -82,8 +87,8 @@ Changelog = "https://github.com/fuyuxiang/echo-agent/blob/master/CHANGELOG.md"
 openai = ["openai>=1.30", "httpx[socks]>=0.23"]
 anthropic = ["anthropic>=0.40", "httpx[socks]>=0.23"]
 bedrock = ["anthropic>=0.40", "boto3>=1.34", "httpx[socks]>=0.23"]
-gemini = ["google-generativeai>=0.8"]
-allproviders = ["openai>=1.30", "anthropic>=0.40", "boto3>=1.34", "google-generativeai>=0.8", "httpx[socks]>=0.23"]
+gemini = ["google-genai>=2.32,<3"]
+allproviders = ["openai>=1.30", "anthropic>=0.40", "boto3>=1.34", "google-genai>=2.32,<3", "httpx[socks]>=0.23"]
 vector = ["faiss-cpu>=1.7"]
 container = ["docker>=7.0"]
 process = ["psutil>=5.9"]
@@ -97,7 +102,7 @@ weixin = ["cryptography>=41.0", "pilk>=0.2.4", "imageio-ffmpeg>=0.4.9"]
 browser = ["playwright>=1.50"]
 otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp>=1.20"]
 tokenizers = ["tiktoken>=0.7"]
-documents = ["pymupdf>=1.24", "python-docx>=1.1", "openpyxl>=3.1", "python-pptx>=1.0"]
+documents = ["pymupdf>=1.24,<2", "python-docx>=1.1", "openpyxl>=3.1", "python-pptx>=1.0"]
 # textual>=8.2: the TUI uses the theme API (textual.theme, added 0.86) and
 # native content markup with theme variables like [$primary] (added 2.0).
 # 8.2 is the version the TUI is developed and verified against; pinning the
@@ -108,9 +113,9 @@ tui = ["textual>=8.2"]
 # the previous omission meant "all" was a lie for any deployment that picked
 # skills beyond the documents/TUI core (web-search, ocr-document, …).
 all = [
-    "openai>=1.30", "anthropic>=0.40", "boto3>=1.34", "google-generativeai>=0.8",
+    "openai>=1.30", "anthropic>=0.40", "boto3>=1.34", "google-genai>=2.32,<3",
     "httpx[socks]>=0.23", "psutil>=5.9", "faiss-cpu>=1.7", "cryptography>=41.0",
-    "tiktoken>=0.7", "fal-client>=0.5", "pymupdf>=1.24", "python-docx>=1.1",
+    "tiktoken>=0.7", "fal-client>=0.5", "pymupdf>=1.24,<2", "python-docx>=1.1",
     "openpyxl>=3.1", "python-pptx>=1.0", "textual>=8.2", "playwright>=1.50",
     # bundled skill deps (see the `[skills]` extra below)
     "duckduckgo_search>=7.0", "trafilatura>=2.0", "feedparser>=6.0",
@@ -133,7 +138,7 @@ skills = [
     "croniter>=1.4",
     "caldav>=1.3",
     "icalendar>=5.0",
-    "pymupdf>=1.24",
+    "pymupdf>=1.24,<2",
     "python-docx>=1.1",
     "Pillow>=13.0.0,<14",
     "pytesseract>=0.3",

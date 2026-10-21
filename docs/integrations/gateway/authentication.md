@@ -15,7 +15,7 @@ gateway:
 ```
 
 !!! warning "仅限开发环境"
-    `open` 模式不对任何请求进行身份校验，任何人均可访问所有接口。绝不应在生产环境或公网可达的实例上使用此模式。
+    `open` 跳过平台/用户白名单和配对检查，不会关闭独立的 API/admin token 检查。无令牌部署只适合受控本机；公网仍须配置令牌、来源和工具策略。
 
 ### allowlist 模式
 
@@ -157,7 +157,7 @@ gateway:
       - "telegram:999888"
 ```
 
-管理员用户可以访问所有 API 端点，包括用户管理、配置修改、系统控制等敏感操作。
+`admin_users` 用于基于平台/用户身份的管理员判断，不替代 HTTP 管理端点的 admin token 守卫。仅在请求中自报管理员 user_id 不能获得管理 API 权限。
 
 ## CORS 来源白名单
 
@@ -215,17 +215,7 @@ gateway:
 
 ## 审计日志
 
-所有认证相关事件（成功、失败、锁定、令牌使用）均记录到审计日志：
-
-- 日志路径：`gateway_auth/audit.jsonl`
-- 格式：每行一条 JSON 记录
-- 包含字段：时间戳、事件类型、来源 IP、用户标识、结果
-
-```json
-{"ts": "2024-01-15T10:30:00Z", "event": "auth_success", "ip": "192.168.1.100", "user": "telegram:123456", "mode": "allowlist"}
-{"ts": "2024-01-15T10:30:05Z", "event": "auth_failure", "ip": "10.0.0.50", "user": "unknown", "mode": "pairing", "reason": "invalid_code"}
-{"ts": "2024-01-15T10:32:00Z", "event": "lockout_triggered", "ip": "10.0.0.50", "attempts": 5, "lockout_seconds": 300}
-```
+`gateway_auth/audit.jsonl` 记录入口调用的认证、管理操作与配对事件。记录字段为 `ts`（Unix 时间）、`action`、`platform`、`user_id`、`ok` 与 `reason`；不包含完整 token，且不保证每个外部网络请求都有独立条目。审计写入失败会输出告警，不应据“没有失败记录”推定请求成功。
 
 ## 完整配置参考
 

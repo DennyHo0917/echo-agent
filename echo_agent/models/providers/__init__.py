@@ -146,6 +146,12 @@ def create_provider(config: ProviderConfig, *, default_model: str = "") -> LLMPr
         api_key = pool.get_next()
     else:
         api_key = _configured_api_key(config, name)
+        if not api_key and _allows_keyless_openai_compatible(name, config):
+            # The official SDK requires a nonempty key even when the configured
+            # compatible endpoint (e.g. local Ollama) does not authenticate.
+            # Keep this sentinel local to the client: never persist it or set
+            # a process-global credential that could affect another provider.
+            api_key = "not-required"
 
     provider = cls(api_key=api_key, api_base=config.api_base, **kwargs)
     provider.request_timeout = float(config.timeout_seconds)

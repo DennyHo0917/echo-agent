@@ -35,6 +35,9 @@ async def run_inspection_tick(
         chat_id=chat_id,
         content=[ContentBlock(type=ContentType.TEXT, text=prompt)],
         metadata={"_inspection": True},
+        # Delivery target is routing, not proof that a human is watching this
+        # scheduled turn. Keep unattended policy in force on every channel.
+        unattended=True,
     )
     try:
         accepted = await bus.publish_inbound(event)

@@ -57,7 +57,7 @@ ApprovalGate makes one of three decisions for each tool call:
 | `ask` | Pause the loop, request confirmation from the user |
 | `deny` | Refuse execution, return the denial reason to the model |
 
-Decisions are based on the tool's safety classification (safe / sensitive / destructive), the current user's permissions, and session-level authorization policies.
+Decisions are based on the tool's safety classification (READ_ONLY / WRITE / EXEC / DANGEROUS), the current user's permissions, and session-level authorization policies.
 
 ### ToolCircuitBreaker
 
@@ -92,7 +92,7 @@ A background asynchronous memory maintenance task:
 
 Keeps the channel connection alive during long-running operations:
 
-- **ProgressHeartbeat**: periodically sends heartbeat signals to the channel to prevent timeout disconnections
+- **ProgressHeartbeat**: periodically publishes progress/wait state; transport heartbeats own socket keepalive
 - **SharedActivityState**: shares progress state across concurrent tool executions, used to build user-visible progress indicators
 
 ### TokenStreamPublisher
@@ -100,7 +100,7 @@ Keeps the channel connection alive during long-running operations:
 Streams the LLM's token output to the channel in real-time, providing a typewriter-style response experience. Supports:
 
 - Adapting push strategy by channel type (e.g., Slack requires batch message updates)
-- Stream interruption and resumption
+- Terminal reconciliation and full final delivery after interruption, not arbitrary upstream stream resumption
 - Coordination with ProgressHeartbeat
 
 ### CostTracker
@@ -131,8 +131,8 @@ Dynamically selects a model based on task characteristics:
 
 When a single inference pass produces multiple tool calls, the system partitions them by safety classification:
 
-- **safe** tools: executed concurrently
-- **sensitive / destructive** tools: executed serially, each passing through ApprovalGate individually
+- Independent calls explicitly declaring `execution_mode="read_only"` may run concurrently when resource partitions and configuration permit
+- Other calls are serial; each actual execution still passes ApprovalGate
 
 ### Termination Conditions
 
@@ -140,7 +140,7 @@ The Agent Loop terminates iteration when any of the following conditions is met:
 
 1. **No more tool calls**: the model returns a plain text response without requesting tools
 2. **max_iterations reached**: iteration count exhausted
-3. **External interrupt**: user sends a new message or cancels the operation
+3. **External interrupt**: explicit interrupt/cancel control; ordinary new messages queue
 4. **Budget exhausted**: CostTracker detects token/cost limit exceeded
 
 ---

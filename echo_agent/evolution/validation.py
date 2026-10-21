@@ -13,6 +13,26 @@ from loguru import logger
 
 if TYPE_CHECKING:
     from echo_agent.config.schema import EvolutionConfig
+    from echo_agent.evolution.types import SkillCandidate
+    from echo_agent.skills.store import SkillStore
+
+
+def validate_candidate_identity(candidate: "SkillCandidate", store: "SkillStore") -> str:
+    """Automated candidates cannot rename or shadow another skill via aliases."""
+    from echo_agent.skills.store import parse_frontmatter
+
+    if candidate.operation == "create":
+        metadata, _ = parse_frontmatter(candidate.proposed_content)
+        if (metadata.get("name") or candidate.skill_name) != candidate.skill_name:
+            return "candidate frontmatter name must match skill_name"
+    elif candidate.operation == "patch":
+        original = store.read_skill(candidate.skill_name, include_disabled=True)
+        if original is not None:
+            before, _ = parse_frontmatter(original)
+            after, _ = parse_frontmatter(original.replace(candidate.proposed_patch_old, candidate.proposed_patch_new, 1))
+            if before.get("name") != after.get("name"):
+                return "candidate patch cannot change a skill's frontmatter name"
+    return ""
 
 
 @dataclass(frozen=True)

@@ -16,6 +16,7 @@ channels:
     enabled: true
     phoneNumberId: "your-phone-number-id"
     accessToken: "your-access-token"
+    appSecret: "your-meta-app-secret"
     verifyToken: "your-verify-token"
     webhookPath: "/whatsapp"
     host: "0.0.0.0"
@@ -40,3 +41,7 @@ channels:
 4. Configure Webhook URL: `https://your-domain/whatsapp`
 5. Set Verify Token to match your config
 6. Subscribe to `messages` events
+
+Both `verifyToken` (subscription setup) and `appSecret` (POST HMAC authentication) are required. Missing credentials fail channel startup; unauthenticated callbacks cannot enter Runtime. Admission failure returns 503, and a native redelivery retains its server event identity.
+
+Local files are uploaded first and sent by the returned media ID; HTTP(S) media can use links. Text and attachments share durable part receipts. Server errors, transport failures and missing message IDs remain unknown outcomes, with automatic replay withheld until the platform result is resolved in Dashboard delivery recovery.

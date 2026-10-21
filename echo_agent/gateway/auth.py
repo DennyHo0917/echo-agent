@@ -190,7 +190,11 @@ class GatewayAuth:
         # cases the gate exists to stop. Verify it really is the same origin by
         # comparing the Origin against the Host we were reached on; with no Host
         # to compare, fall through to the allowlist rather than assume.
-        if sec_fetch_site == "same-site" and host and self._origin_matches_host(origin, host):
+        # Chrome's WebSocket handshake (and older browsers) may omit Fetch
+        # Metadata entirely while still sending the browser-controlled Origin.
+        # Same-authority Origin is sufficient here; the independent Host gate
+        # still rejects DNS rebinding. Different ports remain different origins.
+        if sec_fetch_site in ("", "none", "same-site") and host and self._origin_matches_host(origin, host):
             return False
         # Explicitly allowlisted Origin is trusted (for example a dev frontend).
         if origin and normalize_origin(origin) in self._allowed_origins:

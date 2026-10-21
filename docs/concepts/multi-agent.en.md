@@ -1,15 +1,15 @@
 # Multi-Agent Collaboration
 
-Echo Agent supports decomposing complex tasks and delegating them to multiple Worker Agents for concurrent execution, with the main Agent aggregating results. This mechanism is implemented via the `delegate` tool and is suited for parallelizable multi-step tasks.
+Echo Agent supports decomposing complex tasks and delegating them to multiple Worker Agents for concurrent execution, with the main Agent aggregating results. This mechanism is implemented via the `delegate_task` tool and is suited for parallelizable multi-step tasks.
 
 ## Collaboration Architecture
 
 ```mermaid
 flowchart TB
     USER[User] --> MAIN[Main Agent<br/>Agent Loop]
-    MAIN -->|delegate tool| W1[Worker 1]
-    MAIN -->|delegate tool| W2[Worker 2]
-    MAIN -->|delegate tool| W3[Worker 3]
+    MAIN -->|delegate_task tool| W1[Worker 1]
+    MAIN -->|delegate_task tool| W2[Worker 2]
+    MAIN -->|delegate_task tool| W3[Worker 3]
     W1 --> R1[WorkerResult]
     W2 --> R2[WorkerResult]
     W3 --> R3[WorkerResult]
@@ -38,11 +38,11 @@ class WorkerProfile:
     temperature: float = 0.4
 ```
 
-The Profile constrains each Worker's capability boundary -- Workers can only use tools declared in `default_tools`, following the principle of least privilege.
+The Profile constrains each Worker's capability boundary -- explicit `tools` requests are intersected with the parent Runtime’s available tools; otherwise the Profile’s `default_tools` supplies defaults, following the principle of least privilege.
 
 ## 2. Delegate Tool
 
-The main Agent initiates delegation via the `delegate` tool:
+The main Agent initiates delegation via the `delegate_task` tool:
 
 - Specifies a Worker Profile or uses defaults
 - Describes sub-task goals and constraints
@@ -91,8 +91,8 @@ sequenceDiagram
     User->>Main: Complex task
     Main->>Main: Analyze and decompose sub-tasks
     par Concurrent execution
-        Main->>W1: delegate(sub-task A)
-        Main->>W2: delegate(sub-task B)
+        Main->>W1: delegate_task(sub-task A)
+        Main->>W2: delegate_task(sub-task B)
     end
     W1-->>Main: WorkerResult(completed)
     W2-->>Main: WorkerResult(completed)
@@ -125,7 +125,7 @@ flowchart LR
 - **Identity isolation**: Authenticated tokens yield principals; tasks and sessions are
   principal-scoped
 
-The internal `delegate` tool invokes only the local Worker runtime; it does not route to external
+The internal `delegate_task` tool invokes only the local Worker runtime; it does not route to external
 A2A agents. The repository's low-level `A2AClient` helper has no production caller and does not
 use `net_guard`, so it must not receive untrusted URLs.
 
@@ -152,4 +152,4 @@ Worker concurrency has its own configuration, independent of the tool concurrenc
 | `multiAgent.maxParallelWorkers` | `4` | Maximum parallel sub-agents per delegation |
 | `multiAgent.maxIterations` | `12` | Maximum iterations per sub-agent |
 
-The two limits behave differently when exceeded: reaching `maxDepth` fails the `delegate` call outright and tells the primary agent to handle the task itself, whereas exceeding `maxParallelWorkers` truncates the task list to the cap and logs a warning — the dropped tasks never run. Split large batches into several delegations rather than relying on that truncation.
+The two limits behave differently when exceeded: reaching `maxDepth` fails the `delegate_task` call outright and tells the primary agent to handle the task itself, whereas exceeding `maxParallelWorkers` truncates the task list to the cap and logs a warning — the dropped tasks never run. Split large batches into several delegations rather than relying on that truncation.

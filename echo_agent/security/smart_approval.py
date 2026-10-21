@@ -104,6 +104,14 @@ async def smart_approve(
             max_tokens=512,
             temperature=0.0,
         )
+        finish_reason = getattr(response, "finish_reason", "")
+        if finish_reason in {"error", "length", "content_filter"}:
+            # Partial or failed generation is not an approval decision, even
+            # when the received prefix already contains the word APPROVE.
+            # Reuse the gate's existing unavailable path: no tool execution and
+            # no unanswerable manual wait during a model failure.
+            logger.warning("Smart approval unavailable for '{}' ({})", tool_name, finish_reason)
+            return "unavailable"
         raw_text = (response.content or "").strip()
         if not raw_text:
             # Empty/None content is the signature of a provider outage

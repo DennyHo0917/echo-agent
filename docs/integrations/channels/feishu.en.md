@@ -43,6 +43,10 @@ channels:
 
 Uses tenant_access_token (auto-refreshed from App ID + Secret).
 
+Inbound callbacks require a Verification Token or Encrypt Key. An empty configuration fails startup and returns 403. Encrypt Key enables raw-body SHA256 signature verification over timestamp + nonce + key + body; a configured Verification Token must also match. Reverse proxies must preserve all `X-Lark-*` signature headers and the original body.
+
+Business events are acknowledged only after Runtime admission; busy/rejected admission returns 503. Native message IDs retain the existing durable turn identity across adapter restarts.
+
 ## Common Issues
 
 **Webhook verification fails?**

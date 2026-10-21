@@ -256,7 +256,7 @@ class TasksAPI:
         # recoverable via an explicit workflow advance.
         engine = getattr(self._server._agent_loop, "workflow_engine", None)
         if engine is not None and task.workflow_id and new_status in (
-            TaskStatus.SUCCESS, TaskStatus.FAILED,
+            TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.CANCELLED,
         ):
             try:
                 await engine.on_task_complete(task.id)

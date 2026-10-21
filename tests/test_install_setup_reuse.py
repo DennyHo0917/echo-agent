@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -40,7 +41,12 @@ def _install_tree(tmp_path: Path) -> tuple[Path, Path]:
     bin_dir = install_dir / "venv" / "bin"
     bin_dir.mkdir(parents=True)
     echo_home.mkdir()
-    (bin_dir / "python").symlink_to(sys.executable)
+    # A symlink under a fake venv makes CPython look for pyvenv.cfg there and
+    # lose the running test environment's installed dependencies. Execute the
+    # actual interpreter path, just as the installer's real venv does.
+    python = bin_dir / "python"
+    python.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$@\"\n", encoding="utf-8")
+    python.chmod(0o755)
     echo_agent = bin_dir / "echo-agent"
     echo_agent.write_text(
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$TEST_CALLS\"\n",

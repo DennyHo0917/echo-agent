@@ -24,7 +24,7 @@ scheduler:
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `enabled` | `true` | Whether the scheduling system is active |
-| `max_concurrent_jobs` | `10` | Maximum concurrent jobs; excess jobs are queued |
+| `max_concurrent_jobs` | `10` | Capacity covers the full run; excess manual triggers return a conflict and scheduled checks retry later |
 
 ## Creating Scheduled Jobs
 
@@ -35,8 +35,10 @@ tool: cronjob
 action: create
 name: "daily-report"
 schedule: "0 9 * * *"
-task: "Generate daily summary report and send to notification channel"
+command: "Generate daily summary report and send to notification channel"
 ```
+
+Cron uses the server local timezone. Fix the deployment timezone and inspect the next occurrence. Day/month fields in a normal five-field expression recur and are not a one-shot date reminder.
 
 ### Cron Expression Syntax
 
@@ -77,17 +79,7 @@ Scheduled jobs run periodically in an unattended manner, which means they can:
 
 ### Approval Flow
 
-Creating a new job requires one of the following:
-
-1. **Human approval** (`approval_source="human"`) — Maintainer confirms via Dashboard or interaction
-2. **Pre-authorization flag** (`cron_authorized=true`) — Set in `ToolExecutionContext`
-
-```yaml
-# ToolExecutionContext example
-context:
-  cron_authorized: true
-  unattended: false
-```
+Interactive `cronjob create/authorize` requires human approval of a dangerous action, bound to the displayed instruction, schedule and delivery target. An administrator may explicitly set `authorize_unattended: true` through Dashboard/REST. `cron_authorized` is an internal fact derived by the scheduler from an existing grant, not a caller-supplied authorization mechanism.
 
 Authorization is granted **per job**; there is no channel-level auto-authorization rule. A newly created job starts unauthorized and does not inherit permission to run simply by belonging to the cron channel.
 
@@ -123,16 +115,16 @@ Revoking works from chat too: say "revoke authorization for scheduled job
 
 When `unattended=true`, the approval flow differs:
 
-- If `cron_authorized=true` is also set, jobs can be created automatically
-- If `cron_authorized` is not set, job creation is rejected (it will not hang waiting for human approval)
+- An authorized job may execute permitted WRITE/EXEC operations
+- DANGEROUS operations, including creation of new scheduled jobs, remain denied; unattended work cannot self-escalate or wait indefinitely for an absent approver
 
 ## Cron Channel
 
-The Cron Channel is a dedicated execution environment for scheduled jobs:
+Scheduled CRON events use the same Runtime. When a source session or delivery target is provided, results go there. An unresolved target uses `cron:<job_id>` and reports an undeliverable result instead of treating dropped output as success.
 
-- Each scheduled job is bound to a cron channel
-- Job output and status information is written to the channel
-- The channel provides an isolated context for job execution
+Each occurrence persists a unique `run_id` before enqueueing. `queued` means admission only; `completed` means the turn finished and delivery handling succeeded, with remote confirmation depending on the channel's receipt capability. Unfinished turns are `incomplete`; delivery failures are `error`. The latest 100 occurrences are retained, and late writebacks can only update their own occurrence.
+
+The same job cannot overlap itself, including manual triggers. On restart, prior queued/executing occurrences become `interrupted` and are not blindly replayed. Inspect prior effects before manually retrying. Recurring schedules are recalculated from now rather than replaying every missed occurrence.
 
 ## Dashboard Cron Page
 
@@ -153,28 +145,16 @@ tool: cronjob
 action: list
 ```
 
-### Pause a Job
+### Pause and resume
 
-```yaml
-tool: cronjob
-action: pause
-name: "daily-report"
-```
-
-### Resume a Job
-
-```yaml
-tool: cronjob
-action: resume
-name: "daily-report"
-```
+Use Dashboard Cron or administrator `PUT {api_prefix}/cron/{id}` to change `enabled`. The `cronjob` tool accepts only create/list/delete/trigger/authorize/revoke, not pause/resume. Pausing does not undo prior side effects; inspect the active run/history when a new trigger conflicts.
 
 ### Delete a Job
 
 ```yaml
 tool: cronjob
 action: delete
-name: "daily-report"
+job_id: "<id returned by create/list>"
 ```
 
 ## Use Case Examples
@@ -186,7 +166,7 @@ tool: cronjob
 action: create
 name: "daily-summary"
 schedule: "0 9 * * *"
-task: "Summarize the past 24 hours of channel activity and generate a report"
+command: "Summarize the past 24 hours of channel activity and generate a report"
 ```
 
 ### Periodic Cleanup
@@ -196,7 +176,7 @@ tool: cronjob
 action: create
 name: "weekly-cleanup"
 schedule: "0 3 * * 0"
-task: "Clean up temporary files and expired caches older than 30 days"
+command: "Clean up temporary files and expired caches older than 30 days"
 ```
 
 ### Health Check
@@ -206,7 +186,7 @@ tool: cronjob
 action: create
 name: "health-check"
 schedule: "*/30 * * * *"
-task: "Check connectivity to all backend services, send alert on failure"
+command: "Check connectivity to all backend services, send alert on failure"
 ```
 
 ### Data Synchronization
@@ -216,7 +196,7 @@ tool: cronjob
 action: create
 name: "sync-external-data"
 schedule: "0 */4 * * *"
-task: "Sync latest data from external API to local storage"
+command: "Sync latest data from external API to local storage"
 ```
 
 ## Security Recommendations

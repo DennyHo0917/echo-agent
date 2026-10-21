@@ -15,7 +15,7 @@ gateway:
 ```
 
 !!! warning "Development Only"
-    `open` mode performs no identity verification on any request — anyone can access all endpoints. Never use this mode on production or publicly accessible instances.
+    `open` skips platform/user allowlist and pairing checks. It does not disable independent API/admin token checks. Keep tokenless deployments on controlled loopback; exposed deployments require tokens, origin rules and tool policy.
 
 ### allowlist Mode
 
@@ -158,7 +158,7 @@ gateway:
       - "telegram:999888"
 ```
 
-Admin users can access all API endpoints, including sensitive operations such as user management, configuration changes, and system control.
+`admin_users` is used for platform/user administrator checks. It does not replace the HTTP management endpoints’ admin-token guard; a claimed administrator user_id does not grant management API access.
 
 ## CORS Origin Whitelist
 
@@ -216,17 +216,7 @@ The distinction matters: concluding "the warning is a false alarm" because the h
 
 ## Audit Logging
 
-All authentication-related events (success, failure, lockout, token usage) are recorded in the audit log:
-
-- Log path: `gateway_auth/audit.jsonl`
-- Format: One JSON record per line
-- Fields: timestamp, event type, source IP, user identifier, result
-
-```json
-{"ts": "2024-01-15T10:30:00Z", "event": "auth_success", "ip": "192.168.1.100", "user": "telegram:123456", "mode": "allowlist"}
-{"ts": "2024-01-15T10:30:05Z", "event": "auth_failure", "ip": "10.0.0.50", "user": "unknown", "mode": "pairing", "reason": "invalid_code"}
-{"ts": "2024-01-15T10:32:00Z", "event": "lockout_triggered", "ip": "10.0.0.50", "attempts": 5, "lockout_seconds": 300}
-```
+`gateway_auth/audit.jsonl` records authentication, management and pairing events at their instrumented boundaries. Fields are `ts` (Unix time), `action`, `platform`, `user_id`, `ok` and `reason`. Raw tokens are not included; this is not a claim of a separate record for every network request. Failed audit writes emit warnings, so absence of a failure record is not proof of success.
 
 ## Full Configuration Reference
 

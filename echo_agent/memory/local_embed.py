@@ -33,6 +33,8 @@ from typing import Any
 
 from loguru import logger
 
+from echo_agent.memory.local_rerank import _run_on_daemon_thread
+
 # Known model dimensions so callers (knowledge attach, VectorIndex) can size
 # themselves before the model is actually loaded.
 _KNOWN_DIMS: dict[str, int] = {
@@ -109,9 +111,10 @@ class LocalEmbedder:
         # duplicated or restarted while running.
         self._load_future: Future[Any] | None = None
         self._load_lock = asyncio.Lock()
-        # Dedicated single-thread pool so a hung model download never occupies a
-        # worker in the shared default executor (which also serves session IO,
-        # provider streaming, etc.). A stuck download stays isolated here.
+        # Inference uses a dedicated pool. Downloads run on the same daemon
+        # loader used by LocalReranker: ThreadPoolExecutor workers are joined at
+        # interpreter exit even after shutdown(wait=False), so a cold-cache
+        # download must never run in this pool and hold SIGTERM shutdown open.
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="local-embed")
 
     @property
@@ -158,6 +161,8 @@ class LocalEmbedder:
             return True
         os.makedirs(self._cache_dir, exist_ok=True)
         for url in pkg["urls"]:
+            if self._closed:
+                return False
             tmp = None
             staging = None
             try:
@@ -210,12 +215,16 @@ class LocalEmbedder:
         return False
 
     def _load_model_sync(self) -> Any | None:
+        if self._closed:
+            return None
         try:
             # Our own release mirrors first (CN-friendly, sha256-pinned).
             # Failure silently falls through to the HF/GCS path below. The
             # return flag records whether the cache is now a ready model, which
             # decides the offline-pin below.
             ready = self._fetch_release_package()
+            if self._closed:
+                return None
             # Bound the underlying HF socket so a slow/dead mirror fails fast at
             # the transport layer. HF_HUB_DOWNLOAD_TIMEOUT covers file transfer;
             # HF_HUB_ETAG_TIMEOUT covers the metadata calls (model_info /
@@ -282,7 +291,7 @@ class LocalEmbedder:
                 if time.monotonic() < self._next_retry_at:
                     return None  # still within backoff window after a failure
                 self._load_attempts += 1
-                fut = self._pool.submit(self._load_model_sync)
+                fut = _run_on_daemon_thread(self._load_model_sync, "local-embed-load")
                 self._load_future = fut
 
         try:

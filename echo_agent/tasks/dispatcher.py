@@ -66,6 +66,7 @@ class TaskDispatcher:
         renew_interval_sec: float = 20.0,
         stop_grace_sec: float = 30.0,
         interrupt_manager: Any = None,
+        workflow_engine: Any = None,
     ):
         self._bus = bus
         self._tasks = task_manager
@@ -75,6 +76,7 @@ class TaskDispatcher:
         self._renew_interval = renew_interval_sec
         self._stop_grace = stop_grace_sec
         self._interrupt = interrupt_manager
+        self._workflows = workflow_engine
         self._running = False
         self._tick_task: asyncio.Task[None] | None = None
         self._renew_task: asyncio.Task[None] | None = None
@@ -166,7 +168,7 @@ class TaskDispatcher:
                 # board tasks must not silently bypass EXEC/dangerous-tool
                 # approval the way an up-front-approved cron job does.
                 unattended=True,
-                metadata={"task_id": task.id},
+                metadata={"task_id": task.id, "task_attempt_id": attempt_id},
             )
             response = getattr(task, "metadata", {}).get("_clarification_response")
             question = response.get("question") if isinstance(response, dict) else None
@@ -189,18 +191,26 @@ class TaskDispatcher:
             try:
                 # Move to running BEFORE publishing so a second scan (or another
                 # instance) won't pick the same task up again.
-                await self._tasks.transition(task.id, TaskStatus.RUNNING)
+                if self._workflows is not None and getattr(task, "workflow_id", ""):
+                    if await self._workflows.claim_step(task.id) is None:
+                        return
+                else:
+                    await self._tasks.transition(task.id, TaskStatus.RUNNING)
                 # set_running_context exposes this event id to TasksAPI cancel.
                 # Reserve it first so the independent control lane cannot race
                 # ahead of AgentLoop.request() and silently lose that stop.
                 if self._interrupt is not None:
                     self._interrupt.admit(session_key, event.event_id)
                     interrupt_admitted = True
-                await self._tasks.set_running_context(
+                context = await self._tasks.set_running_context(
                     task.id, session_key, event.event_id,
                     owner_id=self._owner_id, lease_ttl_ms=self._lease_ttl_ms,
                     attempt_id=attempt_id,
                 )
+                if context is None:
+                    if interrupt_admitted:
+                        self._interrupt.discard(session_key, event.event_id)
+                    return
                 accepted = await self._bus.publish_inbound(event)
             except Exception as e:
                 # 缺口(a):transition/context/publish 任一步异常都回队,
@@ -221,9 +231,16 @@ class TaskDispatcher:
             # 显示任务已离开 RUNNING/换主)时才放弃槽位——而非固定 lease_ttl_ms 到点
             # 就放,否则长于租约的正常回合会被提前放槽,令并发静默超过 max_concurrent
             # (续租循环每 renew_interval 续租正是为了支撑长回合)。
+            timeout = getattr(task, "metadata", {}).get("_workflow_timeout_seconds", 0)
+            deadline = asyncio.get_running_loop().time() + timeout if timeout else None
             while not fut.done():
                 try:
-                    await asyncio.wait_for(asyncio.shield(fut), timeout=self._renew_interval)
+                    remaining = deadline - asyncio.get_running_loop().time() if deadline is not None else None
+                    if remaining is not None and remaining <= 0:
+                        await self._expire_task(task.id, session_key, event.event_id, attempt_id)
+                        break
+                    wait = min(self._renew_interval, remaining) if remaining is not None else self._renew_interval
+                    await asyncio.wait_for(asyncio.shield(fut), timeout=wait)
                     break
                 except asyncio.TimeoutError:
                     # Still running past one renew interval — that's expected for
@@ -251,9 +268,23 @@ class TaskDispatcher:
         coroutine holding this task's slot so it releases the semaphore. Async
         (matches TaskManager._fire_terminal's ``await listener(...)``) and
         exception-free so a manager _fire_terminal never breaks on us."""
+        if status == TaskStatus.CANCELLED and self._interrupt is not None:
+            task = await self._tasks.get(task_id)
+            if task is not None and task.session_id:
+                self._interrupt.interrupt(task.session_id, str(task.metadata.get("_interrupt_event_id") or ""))
         fut = self._pending_release.get(task_id)
         if fut is not None and not fut.done():
             fut.set_result(None)
+
+    async def _expire_task(self, task_id: str, session_key: str, event_id: str, attempt_id: str) -> None:
+        if self._interrupt is not None:
+            self._interrupt.interrupt(session_key, event_id)
+        terminal = await self._tasks.mark_terminal(
+            task_id, TaskStatus.FAILED, error="Workflow step execution timed out",
+            expected_attempt_id=attempt_id,
+        )
+        if terminal is not None and terminal.workflow_id and self._workflows is not None:
+            await self._workflows.advance(terminal.workflow_id)
 
     async def _renew_loop(self) -> None:
         """Periodically extend the lease of tasks whose turn is still in flight so

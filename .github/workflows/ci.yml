@@ -35,7 +35,7 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Run ruff
-        run: ruff check .
+        run: ruff check . --extend-exclude client
 
       # scripts/install.sh is how most users get Echo Agent, yet it had no
       # automated checking of any kind. shellcheck is preinstalled on the
@@ -248,6 +248,8 @@ jobs:
 
           markers = (
               "echo_agent/_bundled/dashboard/index.html",
+              "echo_agent/config/default.yaml",
+              "echo_agent/gateway/static/index.html",
               "echo_agent/_vendor/fastembed/__init__.py",
               "echo_agent/_vendor/fastembed/text/text_embedding.py",
               "echo_agent/_vendor/fastembed/rerank/cross_encoder/text_cross_encoder.py",
@@ -278,6 +280,11 @@ jobs:
                   if marker not in names:
                       failures.append(f"{artifact.name} is missing {marker}")
 
+              skill = "skills/productivity/calendar/scripts/calendar_client.py"
+              skill_marker = f"echo_agent/_bundled/{skill}" if artifact.suffix == ".whl" else skill
+              if skill_marker not in names:
+                  failures.append(f"{artifact.name} is missing {skill_marker}")
+
               stray = [name for name in names if "node_modules" in PurePosixPath(name).parts]
               if stray:
                   failures.append(
@@ -294,7 +301,9 @@ jobs:
         run: |
           SMOKE_VENV="${RUNNER_TEMP}/echo-agent-wheel-smoke"
           python -m venv "$SMOKE_VENV"
-          "$SMOKE_VENV/bin/python" -m pip install dist/*.whl
+          for smoke_wheel in dist/*.whl; do
+            "$SMOKE_VENV/bin/python" -m pip install "${smoke_wheel}[openai]"
+          done
           "$SMOKE_VENV/bin/python" -m pip check
           cd "$RUNNER_TEMP"
           "$SMOKE_VENV/bin/python" - <<'PY'
@@ -307,6 +316,13 @@ jobs:
           dashboard = files("echo_agent").joinpath("_bundled/dashboard/index.html")
           if not dashboard.is_file():
               raise SystemExit(f"installed wheel is missing Dashboard: {dashboard}")
+          for resource in (
+              "_bundled/skills/productivity/calendar/scripts/calendar_client.py",
+              "config/default.yaml",
+              "gateway/static/index.html",
+          ):
+              if not files("echo_agent").joinpath(resource).is_file():
+                  raise SystemExit(f"installed wheel is missing resource: {resource}")
           installed_version = version("echo-agent")
           if __version__ != installed_version:
               raise SystemExit(
@@ -317,6 +333,8 @@ jobs:
           print(f"Bundled inference backends: {TextEmbedding.__name__}, {TextCrossEncoder.__name__}")
           PY
           "$SMOKE_VENV/bin/echo-agent" --help >/dev/null
+          "$SMOKE_VENV/bin/python" "$GITHUB_WORKSPACE/scripts/validate-server-process.py" \
+            --output "$RUNNER_TEMP/echo-agent-process-smoke"
 
       - name: Upload verified distributions
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -186,6 +186,21 @@ async def test_transition_task(mock_server, api):
 
 
 @pytest.mark.asyncio
+async def test_cancelling_workflow_step_advances_parent_workflow(mock_server, api):
+    from echo_agent.tasks.models import TaskRecord, TaskStatus
+    task = TaskRecord(title="step", workflow_id="wf", status=TaskStatus.REVIEW)
+    cancelled = TaskRecord(id=task.id, title="step", workflow_id="wf", status=TaskStatus.CANCELLED)
+    mock_server._agent_loop.task_manager.get.return_value = task
+    mock_server._agent_loop.task_manager.transition.return_value = cancelled
+    mock_server._agent_loop.workflow_engine = MagicMock(on_task_complete=AsyncMock())
+    app = web.Application()
+    app.router.add_post("/tasks/{id}/transition", api.transition_task)
+    async with TestClient(TestServer(app)) as client:
+        assert (await client.post(f"/tasks/{task.id}/transition", json={"to": "cancelled"})).status == 200
+    mock_server._agent_loop.workflow_engine.on_task_complete.assert_awaited_once_with(task.id)
+
+
+@pytest.mark.asyncio
 async def test_transition_invalid_returns_400(mock_server, api):
     from echo_agent.tasks.models import TaskRecord, TaskStatus
     mock_server._agent_loop.task_manager.get = AsyncMock(

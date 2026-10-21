@@ -35,8 +35,8 @@ class _Tasks:
     async def transition(self, task_id: str, status: TaskStatus) -> None:
         assert status is TaskStatus.RUNNING
 
-    async def set_running_context(self, *args: object, **kwargs: object) -> None:
-        return None
+    async def set_running_context(self, *args: object, **kwargs: object) -> object:
+        return SimpleNamespace(id=args[0])
 
     async def requeue_dispatch_failed(self, task_id: str) -> None:
         return None

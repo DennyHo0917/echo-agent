@@ -264,6 +264,12 @@ def _aiohttp_session(resp):
 
 
 class TestMCPOAuthClient:
+    @pytest.fixture(autouse=True)
+    def interactive_oauth_journey(self, monkeypatch):
+        # These explicit browser/callback journey tests simulate a foreground
+        # operator. Background authorization has its own fail-fast regression.
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
     def _make(self, tmp_path):
         return MCPOAuthClient("test_server", "https://mcp.example.com/", tmp_path)
 

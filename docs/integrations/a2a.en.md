@@ -44,7 +44,7 @@ submitted → working → completed | failed | canceled | input-required
 
 ## Configuration
 
-A2A is enabled when Gateway is running. Configuration via `a2a` config section.
+Inbound A2A routes are registered only when Gateway/Agent are available and `a2a.enabled: true`; running Gateway alone does not override that switch.
 
 ## Identity and task isolation
 

@@ -162,6 +162,87 @@ async def test_policy_failure_during_inference_prevents_a_later_write(tmp_path):
     assert writes == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["valid", "rejected", "unavailable"])
+async def test_pending_catalog_refresh_blocks_native_handlers_and_tool_execution(tmp_path, outcome):
+    """A notified policy change cannot race a new native command or an existing tool."""
+    entered, release = asyncio.Event(), asyncio.Event()
+    writes, native_calls = [], []
+
+    class Policy(RuntimeExtension):
+        broken = False
+
+        def build_mcp_adapter(self, **kwargs):
+            if self.broken:
+                raise RuntimeError("adapter policy rejected")
+            return super().build_mcp_adapter(**kwargs)
+
+        async def handle_event(self, event):
+            native_calls.append(event.text)
+            return "native completed"
+
+    class Write(Tool):
+        name = "native_write"
+        parameters = {"type": "object", "properties": {}}
+
+        async def execute(self, params, ctx=None):
+            writes.append("executed")
+            return ToolResult(output="done")
+
+    policy = Policy()
+    loop, _, provider = make_loop(tmp_path, policy)
+    loop.tools.register(Write())
+    manager = await connected_manager(tmp_path, policy, loop.tools)
+    loop.mcp_manager = manager
+
+    async def pending_listing(**kwargs):
+        entered.set()
+        await release.wait()
+        if outcome == "unavailable":
+            raise ConnectionError("directory unavailable")
+        return [{"name": "first"}]
+
+    manager._clients["catalog"].list_tools = AsyncMock(side_effect=pending_listing)
+    policy.broken = outcome == "rejected"
+    try:
+        await manager._on_notification("catalog", "notifications/tools/list_changed", {})
+        refresh = manager._refresh_tasks["catalog"]
+        # Admission closes as soon as the notification queues work, even before
+        # the event loop has started the background listing RPC.
+        with pytest.raises(RuntimeExtensionError, match="refresh pending"):
+            manager.assert_extension_healthy()
+        await asyncio.wait_for(entered.wait(), 1)
+        assert loop.tools.has("mcp_catalog_first")  # Keep the old snapshot until atomic replacement.
+        with pytest.raises(RuntimeExtensionError, match="refresh pending"):
+            manager.get_client("catalog")
+        with pytest.raises(RuntimeExtensionError, match="refresh pending"):
+            await loop._process_event(InboundEvent.text_message("test", "u", "u", "confirm"), "trace")
+        with pytest.raises(RuntimeExtensionError, match="refresh pending"):
+            await loop.tools.execute("native_write", {})
+        assert native_calls == [] and writes == [] and provider.calls == 0
+
+        release.set()
+        await asyncio.wait_for(refresh, 1)
+        if outcome != "valid":
+            assert not loop.tools.has("mcp_catalog_first")
+            reason = "adapter policy rejected" if outcome == "rejected" else "directory refresh failed"
+            with pytest.raises(RuntimeExtensionError, match=reason):
+                manager.assert_extension_healthy()
+            # A later trusted rebuild can recover; this is not a permanent latch.
+            policy.broken = False
+            manager._clients["catalog"].list_tools = AsyncMock(return_value=[{"name": "first"}])
+            assert await manager.refresh_tools("catalog")
+            manager.assert_extension_healthy()
+        else:
+            manager.assert_extension_healthy()
+            assert manager.get_client("catalog") is not None
+            await loop._process_event(InboundEvent.text_message("test", "u", "u", "confirm"), "next")
+            assert (await loop.tools.execute("native_write", {})).success
+            assert native_calls == ["confirm"] and writes == ["executed"]
+    finally:
+        await manager.stop_all()
+
+
 def test_runtime_allowlist_cannot_disable_operator_security_controls():
     config = Config(security={"profile": "public_gateway"}, execution={"network_policy": "deny"})
     extension = RuntimeExtension()

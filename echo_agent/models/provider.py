@@ -124,6 +124,9 @@ class LLMResponse:
     # Provider-native reason retained for diagnostics; finish_reason above is
     # the normalized control-flow value used by the agent.
     raw_finish_reason: str = ""
+    # JSON-safe native content (e.g. Gemini signed function-call parts).
+    # Converters consume only their own namespace; never sent to other SDKs.
+    provider_content: dict[str, Any] | None = None
 
     @property
     def has_tool_calls(self) -> bool:
@@ -498,6 +501,10 @@ class LLMProvider(ABC):
             logger.warning("LLM transient stream error (attempt {}), retrying in {:.1f}s", attempt + 1, jitter)
             await asyncio.sleep(jitter)
 
+        # The final attempt owns a fresh draft just like every loop attempt.
+        # The preceding transient failure may have left an un-emitted buffer.
+        buffered.clear()
+        reasoning_open = False
         try:
             response = await asyncio.wait_for(_stream_call(), timeout=timeout)
             await _maybe_release(response)

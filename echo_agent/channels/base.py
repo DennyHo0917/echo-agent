@@ -275,6 +275,12 @@ class BaseChannel(ABC):
             return False
         return await bus.has_clarification(self.name, str(chat_id), str(sender_id), is_group=True)
 
+    def _native_event_id(self, chat_id: str, message_id: Any) -> str | None:
+        """Bind vendor redelivery to the existing durable turn claim, per chat."""
+        from echo_agent.bus.idempotency import deterministic_event_id
+        native_id = str(message_id or "").strip()
+        return deterministic_event_id(f"native:{self.name}", str(chat_id), native_id) if native_id else None
+
     def _build_event(
         self,
         sender_id: str,

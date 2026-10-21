@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 import pytest
 from echo_agent.models.provider import LLMProvider, StreamingUnsupported, LLMResponse
 
@@ -92,21 +93,23 @@ async def test_gemini_chat_stream_emits_deltas():
     parse_called_at_first_delta = {"value": None}
 
     class _Chunk:
-        def __init__(self, t): self.text = t
-        candidates = []
+        def __init__(self, t):
+            self.candidates = [SimpleNamespace(content=SimpleNamespace(parts=[SimpleNamespace(text=t)]))]
 
     chunks = [_Chunk("foo"), _Chunk("bar")]
 
     class _FakeModel:
-        def generate_content(self, **kw):
-            assert kw.get("stream") is True
-            return iter(chunks)
+        async def generate_content_stream(self, **kw):
+            async def iterate():
+                for chunk in chunks:
+                    yield chunk
+            return iterate()
 
     p = GeminiProvider.__new__(GeminiProvider)
     p._default_model = "gemini-x"
     from echo_agent.models.provider import GenerationParams
     p.generation = GenerationParams()
-    p._client = type("G", (), {"GenerativeModel": staticmethod(lambda **k: _FakeModel())})()
+    p._client = SimpleNamespace(models=_FakeModel())
 
     def _parse(resp, model_name):
         parse_calls["count"] += 1
@@ -387,6 +390,7 @@ async def test_gemini_chat_stream_skips_chunk_whose_text_property_raises():
 
         def __init__(self, t):
             self._t = t
+            self.candidates = [SimpleNamespace(content=SimpleNamespace(parts=[SimpleNamespace(text=t)]))]
 
         @property
         def text(self):
@@ -395,15 +399,17 @@ async def test_gemini_chat_stream_skips_chunk_whose_text_property_raises():
     chunks = [_RaisingChunk(), _GoodChunk("after")]
 
     class _FakeModel:
-        def generate_content(self, **kw):
-            assert kw.get("stream") is True
-            return iter(chunks)
+        async def generate_content_stream(self, **kw):
+            async def iterate():
+                for chunk in chunks:
+                    yield chunk
+            return iterate()
 
     p = GeminiProvider.__new__(GeminiProvider)
     p._default_model = "gemini-x"
     from echo_agent.models.provider import GenerationParams, LLMResponse
     p.generation = GenerationParams()
-    p._client = type("G", (), {"GenerativeModel": staticmethod(lambda **k: _FakeModel())})()
+    p._client = SimpleNamespace(models=_FakeModel())
     p._parse_response = lambda resp, model_name: LLMResponse(content="after", finish_reason="stop")
 
     resp = await p.chat_stream(

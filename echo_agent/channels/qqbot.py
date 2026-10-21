@@ -24,7 +24,7 @@ from loguru import logger
 
 from echo_agent.bus.events import ContentType, OutboundEvent
 from echo_agent.bus.queue import MessageBus
-from echo_agent.channels.base import BaseChannel, SendResult
+from echo_agent.channels.base import BaseChannel, SendResult, DeliveryRejected
 from echo_agent.channels.qqbot_media import (
     SendQueueItem,
     UploadCache,
@@ -162,6 +162,8 @@ class QQBotChannel(BaseChannel):
         self._running = False
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
+            await asyncio.gather(self._heartbeat_task, return_exceptions=True)
+            self._heartbeat_task = None
         if self._ws_task:
             self._ws_task.cancel()
             try:
@@ -392,7 +394,8 @@ class QQBotChannel(BaseChannel):
             await self._send_chunk(
                 chat_id, f"[媒体发送失败] {e}", msg_type, reply_to,
             )
-            self._chunk_result.set(SendResult(success=False, error=self.safe_delivery_error(e), delivery_unknown=message_started))
+            self._chunk_result.set(SendResult(success=False, error=self.safe_delivery_error(e),
+                                               delivery_unknown=message_started and not isinstance(e, DeliveryRejected)))
             return False
 
     @staticmethod
@@ -686,6 +689,7 @@ class QQBotChannel(BaseChannel):
             media=media or None,
             reply_to_id=msg_id, metadata={"msg_type": "channel", "guild_id": d.get("guild_id", "")},
             is_group=True,
+            event_id=self._native_event_id(channel_id, msg_id),
         )
 
     async def _on_group_message(self, d: dict[str, Any]) -> None:
@@ -706,6 +710,7 @@ class QQBotChannel(BaseChannel):
             media=media or None,
             reply_to_id=msg_id, metadata={"msg_type": "group"},
             is_group=True,
+            event_id=self._native_event_id(group_id, msg_id),
         )
 
     async def _on_c2c_message(self, d: dict[str, Any]) -> None:
@@ -723,6 +728,7 @@ class QQBotChannel(BaseChannel):
             sender_id=sender_id, chat_id=sender_id, text=content,
             media=media or None,
             reply_to_id=msg_id, metadata={"msg_type": "c2c"},
+            event_id=self._native_event_id(sender_id, msg_id),
         )
 
     # ── Heartbeat ────────────────────────────────────────────────────────────

@@ -4,28 +4,35 @@
 import argparse
 import json
 from echo_agent.dependencies.skill_require import require  # noqa: E402
+from datetime import datetime
 
-require("skill.system-monitor")
 
-import psutil  # noqa: E402
-from datetime import datetime  # noqa: E402
+def _psutil():
+    require("skill.system-monitor")
+    import psutil
+
+    return psutil
 
 
 def check_cpu():
+    psutil = _psutil()
     return {"percent": psutil.cpu_percent(interval=1), "cores": psutil.cpu_count(), "freq_mhz": psutil.cpu_freq().current if psutil.cpu_freq() else 0}
 
 
 def check_memory():
+    psutil = _psutil()
     m = psutil.virtual_memory()
     return {"total_gb": round(m.total / 1e9, 1), "used_gb": round(m.used / 1e9, 1), "percent": m.percent}
 
 
 def check_disk():
+    psutil = _psutil()
     d = psutil.disk_usage("/")
     return {"total_gb": round(d.total / 1e9, 1), "used_gb": round(d.used / 1e9, 1), "percent": round(d.percent, 1)}
 
 
 def check_processes(top_n=5):
+    psutil = _psutil()
     procs = []
     for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_info"]):
         try:
@@ -38,6 +45,7 @@ def check_processes(top_n=5):
 
 
 def full_report():
+    psutil = _psutil()
     cpu = check_cpu()
     mem = check_memory()
     disk = check_disk()

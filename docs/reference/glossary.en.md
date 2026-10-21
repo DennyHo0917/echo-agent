@@ -21,7 +21,7 @@ These definitions follow the current configuration, routes, and types in the sou
 | **Multi-Agent** | Task execution involving multiple collaborating agents. |
 | **OpenTelemetry** | Optional trace and metric export framework; current code creates spans but not the formerly documented named business metric instruments. |
 | **Pairing** | Gateway's short-lived code authorization for a platform/user identity; it does not issue an API token. |
-| **Plugin** | Loadable Python extension that can register tools, channels, or other integrations. |
+| **Plugin** | Loadable Python extension that can register tools and lifecycle hooks; separate channel packages are not automatically wired. |
 | **Risk Category** | Tool risk levels are `READ_ONLY`, `WRITE`, `EXEC`, and `DANGEROUS`. Names such as `MINIMAL_TOOLS` identify tool-profile sets, not risk levels. |
 | **Security Profile** | Deployment profile: `personal_cli`, `daemon`, or `public_gateway`. |
 | **Session** | Conversation context determined by channel, user, chat, and optional thread. |

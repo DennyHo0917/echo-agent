@@ -21,7 +21,7 @@
 | **Multi-Agent** | 由多个 Agent 协作完成任务的运行方式。 |
 | **OpenTelemetry** | 可选的追踪和指标导出框架；当前代码创建追踪 span，但没有文档曾列举的具名业务指标工具。 |
 | **Pairing** | Gateway 对平台与用户身份的短期验证码授权流程；不颁发 API token。 |
-| **Plugin** | 可加载的 Python 扩展，可注册工具、通道或其他集成。 |
+| **Plugin** | 可加载的 Python 扩展，可注册工具和生命周期钩子；不自动接线独立通道包。 |
 | **Risk Category** | 工具风险级别为 `READ_ONLY`、`WRITE`、`EXEC`、`DANGEROUS`；`MINIMAL_TOOLS` 等名称是工具档位集合，不是风险级别。 |
 | **Security Profile** | 运行形态档位：`personal_cli`、`daemon`、`public_gateway`。 |
 | **Session** | 由通道、用户、聊天和可选线程信息确定的对话上下文。 |

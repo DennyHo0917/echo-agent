@@ -8,6 +8,7 @@ from typing import Any
 
 from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 from echo_agent.models.provider import LLMProvider
+from echo_agent.security.path_policy import check_read, resolve_path
 
 
 def _encode_image(path: str) -> tuple[str, str]:
@@ -32,9 +33,12 @@ class VisionTool(Tool):
     }
     timeout_seconds = 60
 
-    def __init__(self, provider: LLMProvider, workspace: str = ""):
+    def __init__(self, provider: LLMProvider, workspace: str = "", *, restrict: bool = False,
+                 spill_root: Path | None = None):
         self._provider = provider
-        self._workspace = workspace
+        self._workspace = str(Path(workspace or ".").resolve())
+        self._restrict = restrict
+        self._spill_root = spill_root
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         image = params["image"]
@@ -44,9 +48,12 @@ class VisionTool(Tool):
         if image.startswith(("http://", "https://")):
             image_content = {"type": "image_url", "image_url": {"url": image}}
         else:
-            image_path = Path(image)
-            if not image_path.is_absolute() and self._workspace:
-                image_path = Path(self._workspace) / image_path
+            violation = check_read(image, self._workspace, spill_root=self._spill_root)
+            if violation:
+                return ToolResult(success=False, error=violation, error_kind="business")
+            image_path = resolve_path(image, self._workspace)
+            if self._restrict and not image_path.is_relative_to(self._workspace):
+                return ToolResult(success=False, error="Image path is outside workspace", error_kind="business")
             if not image_path.exists():
                 return ToolResult(success=False, error=f"Image not found: {image}")
             try:

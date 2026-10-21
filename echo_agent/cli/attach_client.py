@@ -453,7 +453,8 @@ def resolve_connection(config_path: str | None, workspace: str | None) -> Connec
 
     try:
         gw = cfg.gateway
-        token = gw.auth.api_tokens[0] if gw.auth.api_tokens else ""
+        tokens = gw.auth.api_tokens or gw.auth.admin_tokens
+        token = tokens[0] if tokens else ""
         port = int(gw.port)
         ws_path = gw.ws_path
         if port == 0:

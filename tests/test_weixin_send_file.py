@@ -186,7 +186,7 @@ class TestSendRouting:
     @pytest.mark.asyncio
     async def test_file_block_routes_as_attachment(self, tmp_path):
         ch = _make_weixin(tmp_path)
-        ch._send_text = AsyncMock(return_value=wx.SendResult(success=True))
+        ch._send_text_chunk = AsyncMock(return_value=wx.SendResult(success=True))
         ch.send_file = AsyncMock(return_value=wx.SendResult(success=True))
         ev = OutboundEvent(
             channel="weixin", chat_id="u",
@@ -197,7 +197,7 @@ class TestSendRouting:
         )
         res = await ch.send(ev)
         assert res.success
-        ch._send_text.assert_awaited_once()
+        ch._send_text_chunk.assert_awaited_once_with("u", "here you go")
         ch.send_file.assert_awaited_once()
         assert ch.send_file.await_args.kwargs["as_image"] is False
 

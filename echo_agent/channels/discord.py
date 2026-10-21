@@ -57,11 +57,15 @@ class DiscordChannel(BaseChannel):
 
     async def stop(self) -> None:
         self._running = False
-        for task in self._typing_tasks.values():
-            task.cancel()
-        self._typing_tasks.clear()
+        owned_tasks = list(self._typing_tasks.values())
         if self._heartbeat_task:
-            self._heartbeat_task.cancel()
+            owned_tasks.append(self._heartbeat_task)
+        for task in owned_tasks:
+            task.cancel()
+        if owned_tasks:
+            await asyncio.gather(*owned_tasks, return_exceptions=True)
+        self._typing_tasks.clear()
+        self._heartbeat_task = None
         if self._ws_task:
             self._ws_task.cancel()
             try:
@@ -374,6 +378,7 @@ class DiscordChannel(BaseChannel):
             thread_id=d.get("thread", {}).get("id") if d.get("thread") else None,
             metadata={"guild_id": guild_id or ""},
             is_group=bool(guild_id),
+            event_id=self._native_event_id(channel_id, d.get("id")),
         )
 
     async def _heartbeat_loop(self) -> None:

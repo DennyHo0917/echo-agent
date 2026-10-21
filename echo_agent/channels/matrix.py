@@ -276,10 +276,13 @@ class MatrixChannel(BaseChannel):
             return SendResult(success=False, error=str(e))
 
     async def _sync_loop(self) -> None:
-        initial = await self._do_sync(timeout_ms=0)
-        if initial:
-            self._since = initial.get("next_batch", "")
-            self._save_state()
+        if not self._since:
+            # A new installation starts at now; a restored checkpoint must
+            # consume its first delta instead of silently discarding it.
+            initial = await self._do_sync(timeout_ms=0)
+            if initial:
+                self._since = initial.get("next_batch", "")
+                self._save_state()
 
         backoff_idx = 0
         while self._running:
@@ -296,15 +299,22 @@ class MatrixChannel(BaseChannel):
                     continue
                 backoff_idx = 0
                 new_since = data.get("next_batch", self._since)
-                if new_since != self._since:
-                    self._since = new_since
-                    self._save_state()
+                accepted = True
                 rooms = data.get("rooms", {}).get("join", {})
                 for room_id, room_data in rooms.items():
                     if self._allow_rooms and room_id not in self._allow_rooms:
                         continue
                     for evt in room_data.get("timeline", {}).get("events", []):
-                        await self._on_event(room_id, evt)
+                        if await self._on_event(room_id, evt) is False:
+                            accepted = False
+                            break
+                    if not accepted:
+                        break
+                if accepted and new_since != self._since:
+                    self._since = new_since
+                    self._save_state()
+                elif not accepted:
+                    await asyncio.sleep(1)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -342,12 +352,12 @@ class MatrixChannel(BaseChannel):
             logger.error("Matrix sync error: {}", e)
         return None
 
-    async def _on_event(self, room_id: str, evt: dict[str, Any]) -> None:
+    async def _on_event(self, room_id: str, evt: dict[str, Any]) -> bool:
         if evt.get("type") != "m.room.message":
-            return
+            return True
         sender = evt.get("sender", "")
         if sender == self._user_id:
-            return
+            return True
         content = evt.get("content", {})
         msgtype = content.get("msgtype", "")
         text = ""
@@ -378,19 +388,21 @@ class MatrixChannel(BaseChannel):
             text = content.get("body", "")
 
         if not text and not media:
-            return
+            return True
 
         is_group = True  # Default to group for safety
         if self._allow_rooms and room_id not in self._allow_rooms:
-            return
+            return True
 
-        await self._handle_message(
+        event = await self._handle_message(
             sender_id=sender, chat_id=room_id, text=text,
             media=media if media else None,
             reply_to_id=evt.get("event_id"),
             metadata={"msgtype": msgtype},
             is_group=is_group,
+            event_id=self._native_event_id(room_id, evt.get("event_id")),
         )
+        return event is not None
 
     async def _download_matrix_media(self, mxc_url: str) -> str | None:
         """Download a Matrix media file by converting mxc:// to an authenticated HTTP URL."""

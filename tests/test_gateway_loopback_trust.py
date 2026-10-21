@@ -358,7 +358,7 @@ def _msg_request(body, *, headers=None, peer=("127.0.0.1", 5555)):
 
 @pytest.mark.asyncio
 async def test_message_rejects_cross_site_browser(tmp_path) -> None:
-    from test_gateway_server import _make_gateway
+    from tests.test_gateway_server import _make_gateway
     gw, _ = _make_gateway()
     resp = await gw._handle_message(_msg_request(
         {"platform": "api", "user_id": "u1", "text": "hi"},
@@ -387,7 +387,9 @@ async def test_port_preflight_runs_before_bootstrap(monkeypatch, tmp_path) -> No
         held.listen(1)
         port = held.getsockname()[1]
         # host/port 直接由入参提供，跳过 bootstrap 也能预检。
-        await app_mod.run_gateway(host="127.0.0.1", port=port, workspace=str(tmp_path))
+        with pytest.raises(SystemExit) as exc:
+            await app_mod.run_gateway(host="127.0.0.1", port=port, workspace=str(tmp_path))
+        assert exc.value.code == 1
 
     assert bootstrap_called is False
 
@@ -488,7 +490,7 @@ async def test_http_message_rejects_reserved_epoch_injection() -> None:
 async def test_http_message_open_mode_fallback_unchanged(tmp_path) -> None:
     # open 模式 normally_ok=True → allow_fallback=True，
     # 无 session_key 仍走 gateway:{platform}:{chat_id}，行为不变（不误伤）。
-    from test_gateway_server import _make_gateway
+    from tests.test_gateway_server import _make_gateway
     gw, _ = _make_gateway()
     resp = await gw._handle_message(_msg_request(
         {"platform": "api", "user_id": "u1", "text": "hi"},

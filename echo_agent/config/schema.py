@@ -4562,6 +4562,10 @@ class CostConfig(_Base):
 class Config(_Base):
     # Program-owned policy is private: never serialize plugins or secrets into configuration.
     _runtime_extension: object | None = PrivateAttr(default=None)
+    # Preserve startup precedence when a dashboard reloads the saved YAML.
+    # These are process metadata, never fields persisted into configuration.
+    _source_loaded: bool = PrivateAttr(default=False)
+    _startup_overrides: dict = PrivateAttr(default_factory=dict)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     models: ModelsConfig = Field(default_factory=ModelsConfig)

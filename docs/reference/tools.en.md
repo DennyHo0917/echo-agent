@@ -61,7 +61,7 @@ The table below shows which `tools.profile` tiers expose each tool. `full` permi
 | `send_file` | `send_file.py` | ❌ | ❌ | ❌ | `fs.read` `message.send` |
 | `skill_install` | `skill_install.py` | ❌ | ❌ | ❌ | `skill.install` `network.outbound` `fs.write` |
 | `skill_manage` | `skills.py` | ❌ | ❌ | ❌ | `skill.write` `fs.write` |
-| `skill_run` | `skill_run.py` | ❌ | ❌ | ❌ | unclassified |
+| `skill_run` | `skill_run.py` | ❌ | ❌ | ❌ | `process.exec` `code.exec` `skill.read` |
 | `spawn_task` | `delegate.py` | ❌ | ❌ | ❌ | unclassified |
 | `web_fetch` | `web.py` | ❌ | ❌ | ❌ | `network.outbound` |
 | `web_search` | `web.py` | ❌ | ❌ | ❌ | `network.outbound` |
@@ -72,14 +72,9 @@ Tools marked "unclassified" have no entry in `TOOL_CAPABILITIES`, so `tool_capab
 
 ## High-risk tools
 
-`HIGH_RISK_TOOLS` is a set that exists independently of the tier system, with 6 members: `cronjob`, `exec`, `execute_code`, `process`, `skill_install`, `skill_manage`.
+See the [security profile matrix](security-profile-matrix.en.md) for high-risk/deployment denial sets. `skill_run` carries `process.exec` / `code.exec` and is denied by default in daemon/public deployments, as is MCP `mcp.call`.
 
-Two deployment shapes add further restrictions on top:
-
-- **`public_gateway`** — beyond the 6 high-risk tools, also denies `edit_file`, `knowledge_index`, `patch`, `workflow` and `write_file` (11 in total), plus the capabilities `code.exec`, `fs.write`, `process.exec`, `process.manage`, `scheduler.write`, `skill.install`, `skill.write` and `workflow.write`.
-- **`daemon`** — denies `exec`, `execute_code`, `process` and `skill_install` by default, plus the capabilities `code.exec`, `process.exec`, `process.manage` and `skill.install`.
-
-The `artifact_*` tools use a dedicated session namespace, accept no arbitrary filesystem paths, and carry neither `fs.write` nor `process.exec`. They therefore remain available under `public_gateway`. Public document workflows should use this path instead of enabling general `write_file` or `exec`.
+`artifact_*` tools use a dedicated session namespace, accept no arbitrary filesystem paths, and carry neither `fs.write` nor `process.exec`. They therefore remain available under `public_gateway`. Public document workflows should use this path instead of enabling general `write_file` or `exec`.
 
 ## Tool details
 
@@ -290,7 +285,7 @@ Send a local file or image to a specific channel and chat.
 | `caption` | string | | Accompanying caption |
 | `as_image` | boolean | | Send as an image |
 
-Check the target channel's `supports_files` before calling, otherwise the file cannot be delivered. Today only `weixin` supports it unconditionally; `qqbot` depends on its `media_enabled` setting. See [message channels](../integrations/channels/index.md).
+Check the target channel's `supports_files` before calling, otherwise the file cannot be delivered. `weixin`, `dingtalk` and `whatsapp` declare support; `qqbot` depends on `media_enabled`. See [message channels](../integrations/channels/index.md).
 
 #### clarify
 
@@ -379,7 +374,7 @@ Drive a real browser for multi-step web interaction. Sessions are tracked by `se
 | `full_page` | boolean | | — | Capture the full page |
 | `timeout_sec` | integer | | — | Timeout in seconds |
 
-All outbound requests pass the SSRF policy in `echo_agent/security/net_guard.py`; hosts that cannot be resolved are rejected.
+Web fetching and media download use `net_guard`; browsers validate request targets separately. This is not a universal network sandbox for arbitrary SDK/shell traffic.
 
 ### Execution and processes
 

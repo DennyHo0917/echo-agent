@@ -49,6 +49,45 @@ class GatewayHealthProvider:
     def __init__(self, gateway: GatewayServer):
         self._gw = gateway
 
+    def readiness(self) -> dict[str, Any]:
+        """Local task-admission readiness, without paid remote model probes.
+
+        A listening configuration UI is useful even with no model configured.
+        Keep that liveness separate from the runtime's ability to accept work.
+        Optional integrations do not block readiness; the existing execution
+        guard owns failures of required runtime extensions.
+        """
+        agent = self._gw._agent_loop
+        provider = getattr(agent, "provider", None)
+        storage = getattr(agent, "_storage", None)
+        checks = {
+            "gateway": {"ok": self._gw.is_running, "reason": "gateway is not listening"},
+            "bus": {"ok": getattr(self._gw._bus, "_running", False) is True, "reason": "message bus is not running"},
+            "runtime": {"ok": getattr(agent, "is_running", False) is True, "reason": "agent runtime is not running"},
+            "storage": {"ok": getattr(storage, "is_connected", False) is True, "reason": "persistent storage is disconnected"},
+            "provider": {"ok": provider is not None and getattr(provider, "is_stub", False) is not True,
+                         "reason": "configure a real model provider and restart the runtime"},
+            "required_dependencies": {"ok": agent is not None, "reason": "agent runtime is unavailable"},
+        }
+        guard = getattr(agent, "_assert_runtime_healthy", None)
+        if callable(guard):
+            try:
+                guard()
+            except Exception:
+                # Required extension failures can contain endpoint details.
+                # Keep this unauthenticated probe free of secrets and logs.
+                checks["required_dependencies"] = {
+                    "ok": False, "reason": "a required runtime dependency failed; inspect the service log",
+                }
+        for check in checks.values():
+            if check["ok"]:
+                check["reason"] = "ok"
+        ready = all(check["ok"] for check in checks.values())
+        return {
+            "ready": ready, "status": "ready" if ready else "not_ready", "checks": checks,
+            "provider_remote_verified": False,
+        }
+
     async def check(self) -> dict[str, Any]:
         is_running = self._gw.is_running
 
