@@ -5,6 +5,7 @@
 ## [Unreleased]
 
 ### Added
+- 设置向导新增 Cheaper Inference 聚合服务预设，支持专属 `CHEAPER_INFERENCE_API_KEY`；从环境读取的密钥仅保存变量引用，不复制进配置文件。
 - 网关增加持久化回合状态账本，附着式 CLI 可用 `/status [event_id]` 查询 `running` / `waiting_approval` / `waiting_clarification` / `completed` / `incomplete` / `failed` / `interrupted` 等权威状态；断线重连优先用该账本恢复回复与终态
 - TUI `/save` 正式支持 `--format md|txt|json`；JSON 导出保留本地完整回合、隐藏工具和状态事件，递归脱敏凭据字段与命令行密钥参数
 - Gateway HTTP/WS 与 Webhook 支持有界的 `Idempotency-Key` / `X-Idempotency-Key` 去重；同一作用域与请求内容的重试复用原事件和响应，不同内容复用同一 key 返回冲突。键约束、作用域、有效期与 fail-closed 行为见《Gateway API 参考》的「幂等重试」一节
@@ -20,6 +21,7 @@
 - `rich>=13.5` 成为必选依赖。此前它只是 `[tui]` extra 的传递依赖（随 `textual` 装入），而 CLI 的终端渲染代码在不装 `[tui]` 时同样需要它做 markup 转义；最小安装 `pip install echo-agent` 现在会多装 rich。下限取 13.5 是因为更早的版本 `rich.markup.escape` 不补偿结尾反斜杠，会让以 `\` 结尾的 diff 行（C 宏、shell 续行、Windows 路径）吃掉闭合标签
 
 ### Fixed
+- **安全**：OpenAI 兼容的第三方端点不再隐式继承官方 `OPENAI_API_KEY`；显式 `api_key_env` 缺失时拒绝回退到其他密钥。设置向导统一模型列表、验证与运行时的品牌凭据来源，切换服务商或自定义端点时不复用旧端点密钥。本地免密端点、显式密钥和凭证池继续可用；原先依赖第三方端点隐式读取 `OPENAI_API_KEY` 的配置需明确添加 `api_key_env: OPENAI_API_KEY`。
 - **安全**：命令守卫现在识别 `$IFS` 及常见参数展开构造的字段分隔符，阻断原先可绕过的根目录删除与块设备写入；同时区分 `IFS_SUFFIX` 等其他变量和 `${IFS+word}` 的实际替换内容，避免把非分隔符误判为危险命令。
 - 修复首次配置向导与 schema 默认值背离：原始 YAML 没有 `skills` 块时，向导错误地将默认开启的技能系统取消勾选并持久化为 `skills.enabled: false`
 - 公网 Gateway 向导现在同时配置 `allowed_hosts` 与 Dashboard `allowed_origins`，并规范化 Origin 的大小写、默认端口和末尾斜杠；修复部分浏览器/WebView 只读页可用，但 WebSocket 与通道开关持续返回 `cross-site request forbidden` 的配置陷阱
