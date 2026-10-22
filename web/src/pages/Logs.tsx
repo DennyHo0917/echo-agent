@@ -24,9 +24,12 @@ export function Logs() {
   const [offset, setOffset] = useState(0);
 
   useEffect(() => {
+    // Only commit an actual query change. A timer on initial mount otherwise
+    // sends users back to page one if they paginate during the first 300 ms.
+    if (search === debouncedSearch) return;
     const timer = window.setTimeout(() => { setDebouncedSearch(search); setOffset(0); }, 300);
     return () => window.clearTimeout(timer);
-  }, [search]);
+  }, [search, debouncedSearch]);
 
   // 后端已改为倒序分页,offset=0 即最新一页,这里直接按返回顺序渲染。
   // offset 分页此前完全没接:limit 固定 200,缓冲区里更早的日志在界面上无法到达,
@@ -68,7 +71,7 @@ export function Logs() {
         </select>
         <input
           value={search}
-          onChange={(e) => changeFilter(() => setSearch(e.target.value))}
+          onChange={(e) => setSearch(e.target.value)}
           placeholder={t("searchPlaceholder")}
           aria-label={t("searchPlaceholder")}
           className="border rounded px-3 py-1 text-sm flex-1 min-w-40"

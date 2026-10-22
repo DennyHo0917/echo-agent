@@ -12,3 +12,11 @@
 # quiet; the pinned packageManager keeps everyone on the version CI tests.
 allowBuilds:
   esbuild: true
+
+# Security floors for build-time transitive dependencies. Keep them here so
+# pnpm 10 and 11 enforce the same constraints when refreshing the lockfile.
+overrides:
+  browserslist: ^4.28.7
+  baseline-browser-mapping: ^2.11.0
+  nanoid@^3: ^3.3.18
+  source-map-js: ^1.2.2

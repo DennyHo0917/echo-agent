@@ -49,8 +49,9 @@ def test_source_newer_than_dist_needs_build(web):
     assert dashboard_build_needed(web) is True
 
 
-def test_lockfile_newer_than_dist_needs_build(web):
-    lock = web / "pnpm-lock.yaml"
+@pytest.mark.parametrize("filename", ["pnpm-lock.yaml", "pnpm-workspace.yaml"])
+def test_dependency_metadata_newer_than_dist_needs_build(web, filename):
+    lock = web / filename
     lock.write_text("lockfileVersion: '9.0'", encoding="utf-8")
     future = time.time() + 60
     os.utime(lock, (future, future))

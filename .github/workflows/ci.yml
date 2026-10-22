@@ -115,10 +115,14 @@ jobs:
           package-manager-cache: false
 
       - name: Audit production Dashboard dependencies
-        # Audit the frozen lockfile's runtime graph. Excluding dev-only build/test
-        # tools avoids turning unrelated tooling advisories into release blockers.
+        # Keep runtime findings visible separately from the complete toolchain.
         working-directory: web
         run: pnpm audit --prod --audit-level=high
+
+      - name: Audit Dashboard build and test dependencies
+        working-directory: web
+        # Mock-server file disclosure/code injection advisories can be moderate.
+        run: pnpm audit --audit-level=moderate
 
   # The Dashboard SPA is built from source on first use (and by
   # scripts/publish.sh when producing a wheel), so a broken web/ reaches users.

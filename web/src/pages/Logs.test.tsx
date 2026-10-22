@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { Logs } from "./Logs";
 import * as api from "../lib/api";
 
@@ -24,6 +24,7 @@ function mockApi() {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe("Logs 页分页", () => {
@@ -67,6 +68,45 @@ describe("Logs 页分页", () => {
     await waitFor(() =>
       expect(spy).toHaveBeenCalledWith("/logs?limit=200&offset=0&level=ERROR", expect.anything()),
     );
+  });
+
+  it("首屏搜索防抖不会在翻页后把用户送回第一页", async () => {
+    vi.useFakeTimers();
+    const spy = mockApi();
+    await act(async () => { render(<Logs />); });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /较旧/ }));
+    });
+    expect(spy).toHaveBeenLastCalledWith("/logs?limit=200&offset=200", expect.anything());
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(350); });
+
+    expect(screen.getByText("第 201-400 条 / 共 640 条")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /较新/ })).toBeEnabled();
+    expect(spy).toHaveBeenLastCalledWith("/logs?limit=200&offset=200", expect.anything());
+  });
+
+  it("搜索防抖结束时才一次性提交查询并回到第一页", async () => {
+    vi.useFakeTimers();
+    const spy = mockApi();
+    await act(async () => { render(<Logs />); });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /较旧/ }));
+    });
+    spy.mockClear();
+
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("搜索..."), { target: { value: "error" } });
+      await vi.advanceTimersByTimeAsync(299);
+    });
+    expect(spy).not.toHaveBeenCalled();
+    expect(screen.getByText("第 201-400 条 / 共 640 条")).toBeInTheDocument();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenLastCalledWith("/logs?limit=200&offset=0&q=error", expect.anything());
+    expect(screen.getByRole("button", { name: /较新/ })).toBeDisabled();
   });
 
   it("改每页条数同样回到第一页", async () => {

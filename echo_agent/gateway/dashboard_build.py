@@ -45,7 +45,7 @@ MIN_NODE_MAJOR = 20
 PNPM_FALLBACK_MAJOR = "10"
 
 _SOURCE_EXTENSIONS = (".ts", ".tsx", ".js", ".jsx", ".css", ".html", ".vue")
-_META_FILES = ("package.json", "pnpm-lock.yaml", "vite.config.ts", "vite.config.js")
+_META_FILES = ("package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "vite.config.ts", "vite.config.js")
 _SKIP_DIRS = frozenset({"node_modules", "dist"})
 _STREAM_WAIT_POLL_SECONDS = 5.0
 _STREAM_TERMINATE_GRACE_SECONDS = 3.0
