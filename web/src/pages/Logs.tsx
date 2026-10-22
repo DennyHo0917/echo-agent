@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useApi } from "../hooks/use-api";
 import { useWsSubscribe } from "../hooks/use-ws";
@@ -22,6 +22,9 @@ export function Logs() {
   const [live, setLive] = useState(true);
   const [pageSize, setPageSize] = useState<number>(200);
   const [offset, setOffset] = useState(0);
+  const [liveRefreshPending, setLiveRefreshPending] = useState(false);
+  const searchPending = search !== debouncedSearch;
+  const liveActive = live && offset === 0 && !searchPending;
 
   useEffect(() => {
     // Only commit an actual query change. A timer on initial mount otherwise
@@ -37,14 +40,26 @@ export function Logs() {
   const { data, loading, error, refetch } = useApi<{ logs: LogEntry[]; total: number }>(
     `/logs?limit=${pageSize}&offset=${offset}${level ? `&level=${level}` : ""}${debouncedSearch ? `&q=${encodeURIComponent(debouncedSearch)}` : ""}`
   );
-  const liveTimer = useRef<number | null>(null);
+  // Pending events belong to this query and live mode. A new query already
+  // fetches its own snapshot; old events must not trigger an old refetch later.
+  useEffect(() => { setLiveRefreshPending(false); }, [refetch, liveActive]);
+
   useWsSubscribe(["logs"], () => {
-    if (!live || offset !== 0 || liveTimer.current !== null) return;
-    liveTimer.current = window.setTimeout(() => { liveTimer.current = null; refetch(); }, 500);
+    if (liveActive) setLiveRefreshPending(true);
   }, ["log_entry"]);
-  useEffect(() => () => {
-    if (liveTimer.current !== null) window.clearTimeout(liveTimer.current);
-  }, []);
+  useEffect(() => {
+    // Keep events received during a slow request, then refresh once it settles.
+    // Repeated events share one timer instead of aborting the in-flight request
+    // or continually postponing the refresh under a steady stream of logs.
+    if (!liveActive || !liveRefreshPending || loading) return;
+    const timer = window.setTimeout(() => {
+      setLiveRefreshPending(false);
+      void refetch();
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [liveActive, liveRefreshPending, loading, refetch]);
+
+  const refresh = () => { setLiveRefreshPending(false); void refetch(); };
 
   const entries = data?.logs ?? [];
   const total = data?.total ?? 0;
@@ -84,17 +99,23 @@ export function Logs() {
         >
           {PAGE_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
         </select>
-        <button onClick={() => refetch()} className="flex items-center gap-1 border rounded px-2 py-1 text-sm hover:bg-gray-100" title={t("common:refresh")}>
-          <RefreshCw size={14} /> {t("common:refresh")}
+        <button onClick={refresh} disabled={loading || searchPending} className="flex items-center gap-1 border rounded px-2 py-1 text-sm hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed" title={t("common:refresh")}>
+          <RefreshCw size={14} className={loading ? "animate-spin" : undefined} /> {t("common:refresh")}
         </button>
         <label className="flex items-center gap-1 text-xs text-gray-600 select-none">
-          <input type="checkbox" checked={live} onChange={(event) => setLive(event.target.checked)} /> {t("live")}
+          <input type="checkbox" checked={live} onChange={(event) => {
+            const enabled = event.target.checked;
+            setLive(enabled);
+            if (enabled && offset === 0 && !searchPending) refresh();
+          }} /> {t("live")}
         </label>
+        {live && offset !== 0 && <span role="status" className="text-xs text-gray-500">{t("livePaused")}</span>}
       </div>
 
       <div
         role="log"
         aria-live="off"
+        aria-busy={loading || searchPending}
         className="flex-1 overflow-y-auto bg-gray-900 rounded-lg p-4 font-mono text-xs"
       >
         {error && <div className="text-red-400">{t("common:loadFailed", { error })}</div>}
@@ -115,23 +136,23 @@ export function Logs() {
 
       {!error && total > 0 && (
         <div className="flex items-center justify-end gap-2 mt-2 text-xs text-gray-500">
-          <span>
+          {loading ? <span>{t("common:loading")}</span> : <span>
             {t("range", {
               from: offset + 1,
               to: Math.min(offset + entries.length, total),
               total,
             })}
-          </span>
+          </span>}
           <button
             onClick={() => setOffset(Math.max(0, offset - pageSize))}
-            disabled={offset === 0}
+            disabled={loading || searchPending || offset === 0}
             className="flex items-center gap-0.5 border rounded px-2 py-1 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <ChevronLeft size={14} /> {t("prev")}
           </button>
           <button
             onClick={() => setOffset(offset + pageSize)}
-            disabled={offset + entries.length >= total}
+            disabled={loading || searchPending || offset + entries.length >= total}
             className="flex items-center gap-0.5 border rounded px-2 py-1 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {t("next")} <ChevronRight size={14} />
