@@ -5,6 +5,7 @@
 ## [Unreleased]
 
 ### Added
+- Cohesivity 作为仓库中的可选技能提供，位于 `optional-skills/cohesivity/`，不随包分发、不默认加载；用户主动导入仅安装说明文件，固定版本的第三方初始化及云端变更需另行明确授权。
 - 设置向导新增 Cheaper Inference 聚合服务预设，支持专属 `CHEAPER_INFERENCE_API_KEY`；从环境读取的密钥仅保存变量引用，不复制进配置文件。
 - 网关增加持久化回合状态账本，附着式 CLI 可用 `/status [event_id]` 查询 `running` / `waiting_approval` / `waiting_clarification` / `completed` / `incomplete` / `failed` / `interrupted` 等权威状态；断线重连优先用该账本恢复回复与终态
 - TUI `/save` 正式支持 `--format md|txt|json`；JSON 导出保留本地完整回合、隐藏工具和状态事件，递归脱敏凭据字段与命令行密钥参数
